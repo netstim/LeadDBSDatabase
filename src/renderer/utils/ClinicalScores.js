@@ -88,51 +88,55 @@ function ClinicalScores() {
   }, []);
 
   // Map of UPDRS keys to direct image file paths
-  // Simple relative paths from the renderer assets folder
-  const UPDRSImages = {
-    '3-1_Speech': '../assets/icons/3-1_Speech.PNG',
-    '3-2_Facial-expression': '../assets/icons/3-2_Facial-expression.PNG',
-    '3-3_Rigidity-neck': '../assets/icons/3-3_Rigidity-neck.PNG',
-    '3-3_Rigidity_RUE': '../assets/icons/3-3_Rigidity_RUE.PNG',
-    '3-3_Rigidity_LUE': '../assets/icons/3-3_Rigidity_LUE.PNG',
-    '3-3_Rigidity_RLE': '../assets/icons/3-3_Rigidity_RLE.PNG',
-    '3-3_Rigidity_LLE': '../assets/icons/3-3_Rigidity_LLE.PNG',
-    '3-4_Finger-tapping_R': '../assets/icons/3-4_Finger-tapping_R.PNG',
-    '3-4_Finger-tapping_L': '../assets/icons/3-4_Finger-tapping_L.PNG',
-    '3-5_Hand-movements_R': '../assets/icons/3-5_Hand-movements_R.PNG',
-    '3-5_Hand-movements_L': '../assets/icons/3-5_Hand-movements_L.PNG',
-    '3-6_Pronation-supination-R':
-      '../assets/icons/3-6_Pronation-supination-R.PNG',
-    '3-6_Pronation-supination-L':
-      '../assets/icons/3-6_Pronation-supination-L.PNG',
-    '3-7_Toe-tapping_R': '../assets/icons/3-7_Toe-tapping_R.PNG',
-    '3-7_Toe-tapping_L': '../assets/icons/3-7_Toe-tapping_L.PNG',
-    '3-8_Leg-agility_R': '../assets/icons/3-8_Leg-agility_R.PNG',
-    '3-8_Leg-agility_L': '../assets/icons/3-8_Leg-agility_L.PNG',
-    '3-9_Arise-from-chair': '../assets/icons/3-9_Arise-from-chair.PNG',
-    '3-10_Gait': '../assets/icons/3-10_Gait.PNG',
-    '3-11_Freezing-of-gait': '../assets/icons/3-11_Freezing-of-gait.PNG',
-    '3-12_Postural-stability': '../assets/icons/3-12_Postural-stability.PNG',
-    '3-13_Posture': '../assets/icons/3-13_Posture.PNG',
-    '3-14_Global-spontaneity-of-movement':
-      '../assets/icons/3-14_Global-spontaneity-of-movement.PNG',
-    '3-15_Postural-tremor-of-hands-R':
-      '../assets/icons/3-15_Postural-tremor-of-hands-R.PNG',
-    '3-15_Postural-tremor-of-hands-L':
-      '../assets/icons/3-15_Postural-tremor-of-hands-L.PNG',
-    '3-16_Kinetic-tremor-of-the-hands_R':
-      '../assets/icons/3-16_Kinetic-tremor-of-the-hands_R.PNG',
-    '3-16_Kinetic-tremor-of-the-hands_L':
-      '../assets/icons/3-16_Kinetic-tremor-of-the-hands_L.PNG',
-    '3-17_Rest-tremor_RUE': '../assets/icons/3-17_Rest-tremor_RUE.PNG',
-    '3-17_Rest-tremor_LUE': '../assets/icons/3-17_Rest-tremor_LUE.PNG',
-    '3-17_Rest-tremor-amp_RLE': '../assets/icons/3-17_Rest-tremor-amp_RLE.PNG',
-    '3-17_Rest-tremor-amp_LLE': '../assets/icons/3-17_Rest-tremor-amp_LLE.PNG',
-    '3-17_Rest-tremor-amplitude_lip-jaw':
-      '../assets/icons/3-17_Rest-tremor-amplitude_lip-jaw.PNG',
-    '3-18_Constancy-of-rest-tremor':
-      '../assets/icons/3-18_Constancy-of-rest-tremor.PNG',
-  };
+  // Using relative paths from utils folder (../) to assets/icons folder
+  // Fixed typo: changed .PpngNG to .png for 3-15_Postural-tremor-of-hands-R
+  // const UPDRSImages = {
+  //   '3-1_Speech': '../assets/icons/3-1_Speech.png',
+  //   '3-2_Facial-expression': '../assets/icons/3-2_Facial-expression.png',
+  //   '3-3_Rigidity-neck': '../assets/icons/3-3_Rigidity-neck.png',
+  //   '3-3_Rigidity_RUE': '../assets/icons/3-3_Rigidity_RUE.png',
+  //   '3-3_Rigidity_LUE': '../assets/icons/3-3_Rigidity_LUE.png',
+  //   '3-3_Rigidity_RLE': '../assets/icons/3-3_Rigidity_RLE.png',
+  //   '3-3_Rigidity_LLE': '../assets/icons/3-3_Rigidity_LLE.png',
+  //   '3-4_Finger-tapping_R': '../assets/icons/3-4_Finger-tapping_R.png',
+  //   '3-4_Finger-tapping_L': '../assets/icons/3-4_Finger-tapping_L.png',
+  //   '3-5_Hand-movements_R': '../assets/icons/3-5_Hand-movements_R.png',
+  //   '3-5_Hand-movements_L': '../assets/icons/3-5_Hand-movements_L.png',
+  //   '3-6_Pronation-supination-R': '../assets/icons/3-6_Pronation-supination-R.png',
+  //   '3-6_Pronation-supination-L': '../assets/icons/3-6_Pronation-supination-L.png',
+  //   '3-7_Toe-tapping_R': '../assets/icons/3-7_Toe-tapping_R.png',
+  //   '3-7_Toe-tapping_L': '../assets/icons/3-7_Toe-tapping_L.png',
+  //   '3-8_Leg-agility_R': '../assets/icons/3-8_Leg-agility_R.png',
+  //   '3-8_Leg-agility_L': '../assets/icons/3-8_Leg-agility_L.png',
+  //   '3-9_Arise-from-chair': '../assets/icons/3-9_Arise-from-chair.png',
+  //   '3-10_Gait': '../assets/icons/3-10_Gait.png',
+  //   '3-11_Freezing-of-gait': '../assets/icons/3-11_Freezing-of-gait.png',
+  //   '3-12_Postural-stability': '../assets/icons/3-12_Postural-stability.png',
+  //   '3-13_Posture': '../assets/icons/3-13_Posture.png',
+  //   '3-14_Global-spontaneity-of-movement': '../assets/icons/3-14_Global-spontaneity-of-movement.png',
+  //   '3-15_Postural-tremor-of-hands-R': '../assets/icons/3-15_Postural-tremor-of-hands-R.png',
+  //   '3-15_Postural-tremor-of-hands-L': '../assets/icons/3-15_Postural-tremor-of-hands-L.png',
+  //   '3-16_Kinetic-tremor-of-the-hands_R': '../assets/icons/3-16_Kinetic-tremor-of-the-hands_R.png',
+  //   '3-16_Kinetic-tremor-of-the-hands_L': '../assets/icons/3-16_Kinetic-tremor-of-the-hands_L.png',
+  //   '3-17_Rest-tremor_RUE': '../assets/icons/3-17_Rest-tremor_RUE.png',
+  //   '3-17_Rest-tremor_LUE': '../assets/icons/3-17_Rest-tremor_LUE.png',
+  //   '3-17_Rest-tremor-amp_RLE': '../assets/icons/3-17_Rest-tremor-amp_RLE.png',
+  //   '3-17_Rest-tremor-amp_LLE': '../assets/icons/3-17_Rest-tremor-amp_LLE.png',
+  //   '3-17_Rest-tremor-amplitude_lip-jaw': '../assets/icons/3-17_Rest-tremor-amplitude_lip-jaw.png',
+  //   '3-18_Constancy-of-rest-tremor': '../assets/icons/3-18_Constancy-of-rest-tremor.png',
+  // };
+  function importAll(r) {
+    let images = {};
+    r.keys().forEach((item) => {
+      const key = item.replace('./', '').replace(/\.[^/.]+$/, ''); // Remove './' and file extension
+      images[key] = r(item);
+    });
+    return images;
+  }
+  const UPDRSImages = importAll(
+    require.context('../assets/icons', false, /\.(PNG|jpe?g|svg|png)$/),
+  );
+  console.log('UPDRSImages: ', UPDRSImages);
   const YBOCS = {
     'Time occupied by obsessive thoughts': 0,
     'Interference due to obsessive thoughts': 0,

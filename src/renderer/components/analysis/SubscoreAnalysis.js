@@ -68,7 +68,7 @@ function SubscoreAnalysis({ rawData, showPercentage, scoretype }) {
 
   rawData.forEach((patientData) => {
     Object.keys(patientData).forEach((timepoint) => {
-      if (timepoint !== 'id' && patientData[timepoint][scoretype]) {
+      if (timepoint !== 'id' && patientData[timepoint] && patientData[timepoint][scoretype]) {
         const calculateSum = (items) =>
           items.reduce((sum, item) => sum + (patientData[timepoint][scoretype][item] >= threshold ? patientData[timepoint][scoretype][item] : 0), 0);
 
@@ -80,9 +80,31 @@ function SubscoreAnalysis({ rawData, showPercentage, scoretype }) {
     });
   });
 
-  const orderedTimepoints = Object.keys(subscoreSumsByTimepoint.bradykinesia).sort((a, b) => {
-    if (a === 'baseline') return -1;
-    if (b === 'baseline') return 1;
+  // Filter out timepoints with no valid data (check if at least one subscore has data)
+  const validTimepoints = Object.keys(subscoreSumsByTimepoint.bradykinesia).filter(
+    (timepoint) => {
+      const hasData =
+        (subscoreSumsByTimepoint.bradykinesia[timepoint] !== undefined && subscoreSumsByTimepoint.bradykinesia[timepoint] !== null) ||
+        (subscoreSumsByTimepoint.rigidity[timepoint] !== undefined && subscoreSumsByTimepoint.rigidity[timepoint] !== null) ||
+        (subscoreSumsByTimepoint.tremor[timepoint] !== undefined && subscoreSumsByTimepoint.tremor[timepoint] !== null) ||
+        (subscoreSumsByTimepoint.axial[timepoint] !== undefined && subscoreSumsByTimepoint.axial[timepoint] !== null);
+      return hasData;
+    }
+  );
+
+  const orderedTimepoints = validTimepoints.sort((a, b) => {
+    // Prioritize 'baseline' if it exists and has valid data, but don't require it
+    const aHasData = subscoreSumsByTimepoint.bradykinesia[a] !== undefined ||
+                     subscoreSumsByTimepoint.rigidity[a] !== undefined ||
+                     subscoreSumsByTimepoint.tremor[a] !== undefined ||
+                     subscoreSumsByTimepoint.axial[a] !== undefined;
+    const bHasData = subscoreSumsByTimepoint.bradykinesia[b] !== undefined ||
+                     subscoreSumsByTimepoint.rigidity[b] !== undefined ||
+                     subscoreSumsByTimepoint.tremor[b] !== undefined ||
+                     subscoreSumsByTimepoint.axial[b] !== undefined;
+
+    if (a === 'baseline' && aHasData) return -1;
+    if (b === 'baseline' && bHasData) return 1;
 
     const aIsDay = a.includes('day');
     const bIsDay = b.includes('day');
@@ -101,17 +123,24 @@ function SubscoreAnalysis({ rawData, showPercentage, scoretype }) {
     return a.localeCompare(b, undefined, { numeric: true });
   });
 
-  const baseline = {
-    bradykinesia: subscoreSumsByTimepoint.bradykinesia['baseline'] || 1,
-    rigidity: subscoreSumsByTimepoint.rigidity['baseline'] || 1,
-    tremor: subscoreSumsByTimepoint.tremor['baseline'] || 1,
-    axial: subscoreSumsByTimepoint.axial['baseline'] || 1,
+  // Use the first timepoint as the reference for percentage calculation
+  // This will be 'baseline' if it exists and has valid data, otherwise the earliest timepoint
+  const referenceTimepoint = orderedTimepoints[0];
+  const reference = {
+    bradykinesia: referenceTimepoint && subscoreSumsByTimepoint.bradykinesia[referenceTimepoint] !== undefined
+      ? subscoreSumsByTimepoint.bradykinesia[referenceTimepoint] : 1,
+    rigidity: referenceTimepoint && subscoreSumsByTimepoint.rigidity[referenceTimepoint] !== undefined
+      ? subscoreSumsByTimepoint.rigidity[referenceTimepoint] : 1,
+    tremor: referenceTimepoint && subscoreSumsByTimepoint.tremor[referenceTimepoint] !== undefined
+      ? subscoreSumsByTimepoint.tremor[referenceTimepoint] : 1,
+    axial: referenceTimepoint && subscoreSumsByTimepoint.axial[referenceTimepoint] !== undefined
+      ? subscoreSumsByTimepoint.axial[referenceTimepoint] : 1,
   };
 
   const datasets = subscoreCategories.map(({ name, items, color }) => {
     const yValues = orderedTimepoints.map((timepoint) =>
       showPercentage
-        ? ((baseline[name.toLowerCase()] - subscoreSumsByTimepoint[name.toLowerCase()][timepoint]) / baseline[name.toLowerCase()]) * 100
+        ? ((reference[name.toLowerCase()] - subscoreSumsByTimepoint[name.toLowerCase()][timepoint]) / reference[name.toLowerCase()]) * 100
         : subscoreSumsByTimepoint[name.toLowerCase()][timepoint]
     );
 

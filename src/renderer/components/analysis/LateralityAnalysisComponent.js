@@ -59,7 +59,7 @@ function LateralityAnalysisComponent({ rawData, showPercentage, scoretype }) {
 
   rawData.forEach((patientData) => {
     Object.keys(patientData).forEach((timepoint) => {
-      if (timepoint !== 'id' && patientData[timepoint][scoretype]) {
+      if (timepoint !== 'id' && patientData[timepoint] && patientData[timepoint][scoretype]) {
         const { leftSideSum, rightSideSum } = splitScoresByLaterality(patientData[timepoint][scoretype]);
 
         if (!leftSumsByTimepoint[timepoint]) {
@@ -73,9 +73,19 @@ function LateralityAnalysisComponent({ rawData, showPercentage, scoretype }) {
     });
   });
 
-  const orderedTimepoints = Object.keys(leftSumsByTimepoint).sort((a, b) => {
-    if (a === 'baseline') return -1;
-    if (b === 'baseline') return 1;
+  // Filter out timepoints with no valid data (undefined or null)
+  const validTimepoints = Object.keys(leftSumsByTimepoint).filter(
+    (timepoint) =>
+      leftSumsByTimepoint[timepoint] !== undefined &&
+      leftSumsByTimepoint[timepoint] !== null &&
+      rightSumsByTimepoint[timepoint] !== undefined &&
+      rightSumsByTimepoint[timepoint] !== null
+  );
+
+  const orderedTimepoints = validTimepoints.sort((a, b) => {
+    // Prioritize 'baseline' if it exists and has valid data, but don't require it
+    if (a === 'baseline' && leftSumsByTimepoint[a] !== undefined && rightSumsByTimepoint[a] !== undefined) return -1;
+    if (b === 'baseline' && leftSumsByTimepoint[b] !== undefined && rightSumsByTimepoint[b] !== undefined) return 1;
 
     const aIsDay = a.includes('day');
     const bIsDay = b.includes('day');
@@ -94,18 +104,21 @@ function LateralityAnalysisComponent({ rawData, showPercentage, scoretype }) {
     return a.localeCompare(b, undefined, { numeric: true });
   });
 
-  const baselineLeft = leftSumsByTimepoint['baseline'] || 1;
-  const baselineRight = rightSumsByTimepoint['baseline'] || 1;
+  // Use the first timepoint as the reference for percentage calculation
+  // This will be 'baseline' if it exists and has valid data, otherwise the earliest timepoint
+  const referenceTimepoint = orderedTimepoints[0];
+  const referenceLeft = referenceTimepoint && leftSumsByTimepoint[referenceTimepoint] ? leftSumsByTimepoint[referenceTimepoint] : 1;
+  const referenceRight = referenceTimepoint && rightSumsByTimepoint[referenceTimepoint] ? rightSumsByTimepoint[referenceTimepoint] : 1;
 
   const leftYValues = orderedTimepoints.map((timepoint) =>
     showPercentage
-      ? ((baselineLeft - leftSumsByTimepoint[timepoint]) / baselineLeft) * 100
+      ? ((referenceLeft - leftSumsByTimepoint[timepoint]) / referenceLeft) * 100
       : leftSumsByTimepoint[timepoint]
   );
 
   const rightYValues = orderedTimepoints.map((timepoint) =>
     showPercentage
-      ? ((baselineRight - rightSumsByTimepoint[timepoint]) / baselineRight) * 100
+      ? ((referenceRight - rightSumsByTimepoint[timepoint]) / referenceRight) * 100
       : rightSumsByTimepoint[timepoint]
   );
 

@@ -29,7 +29,7 @@ function PairedTTestComponent({ rawData, showPercentage, scoretype }) {
   // Calculate the total score for each time point, excluding 'id'
   rawData.forEach((patient) => {
     Object.keys(patient).forEach((timepoint) => {
-      if (timepoint !== 'id' && patient[timepoint][scoretype]) {
+      if (timepoint !== 'id' && patient[timepoint] && patient[timepoint][scoretype]) {
         const scores = Object.values(patient[timepoint][scoretype]);
         console.log(timepoint, scores);
         const numericScores = scores.filter(score => typeof score === 'number');
@@ -44,10 +44,16 @@ function PairedTTestComponent({ rawData, showPercentage, scoretype }) {
     });
   });
 
+  // Filter out timepoints with no valid data (undefined or null)
+  const validTimepoints = Object.keys(scoreSums).filter(
+    (timepoint) => scoreSums[timepoint] !== undefined && scoreSums[timepoint] !== null
+  );
+
   // Determine ordered data for the line chart
-  const orderedTimepoints = Object.keys(scoreSums).sort((a, b) => {
-    if (a === 'baseline') return -1;
-    if (b === 'baseline') return 1;
+  const orderedTimepoints = validTimepoints.sort((a, b) => {
+    // Prioritize 'baseline' if it exists and has valid data, but don't require it
+    if (a === 'baseline' && scoreSums[a] !== undefined && scoreSums[a] !== null) return -1;
+    if (b === 'baseline' && scoreSums[b] !== undefined && scoreSums[b] !== null) return 1;
 
     const aIsDay = a.includes('day');
     const bIsDay = b.includes('day');
@@ -69,12 +75,15 @@ function PairedTTestComponent({ rawData, showPercentage, scoretype }) {
     });
   });
 
-  const baselineValue = scoreSums['baseline'] || 1; // Use baseline value for percentage improvement calculation
+  // Use the first timepoint as the reference for percentage calculation
+  // This will be 'baseline' if it exists and has valid data, otherwise the earliest timepoint
+  const referenceTimepoint = orderedTimepoints[0];
+  const referenceValue = referenceTimepoint && scoreSums[referenceTimepoint] ? scoreSums[referenceTimepoint] : 1;
 
   const xValues = orderedTimepoints;
   const yValues = orderedTimepoints.map((timepoint) =>
     showPercentage
-      ? ((baselineValue - scoreSums[timepoint]) / baselineValue) * 100 // Calculate percentage improvement
+      ? ((referenceValue - scoreSums[timepoint]) / referenceValue) * 100 // Calculate percentage improvement
       : scoreSums[timepoint]
   );
 
