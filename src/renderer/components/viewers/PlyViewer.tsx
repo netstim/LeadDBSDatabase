@@ -334,16 +334,17 @@ function PlyViewer({
 
         const material = new THREE.MeshStandardMaterial({
           vertexColors: geometry.hasAttribute('color'),
-          flatShading: true,
+          flatShading: false, // Use smooth shading for better back-face visibility
           metalness: 0.1, // More reflective
           roughness: 0.5, // Shinier surface
           transparent: true, // Enable transparency
-          opacity: 0.8, // Set opacity to 60%
-          // blending: THREE.AdditiveBlending,
-          // emissive: new THREE.Color(0x000000), // Reduce emissive color
-          // emissiveIntensity: 0.1, // Lower emissive intensity
-
+          opacity: 0.5, // Set opacity to 60%
+          side: THREE.DoubleSide, // Render both sides so visible from any angle
+          // Add emissive to ensure visibility even when not directly lit
+          emissive: new THREE.Color(0x000000),
+          emissiveIntensity: 0.1,
         });
+        geometry.computeVertexNormals(); // Ensure normals are computed for proper lighting on both sides
         // eslint-disable-next-line no-use-before-define
         addMeshToScene('Anatomy', geometry, material);
       } catch (error) {
@@ -363,6 +364,7 @@ function PlyViewer({
         );
         // setPlyFile(fileData);
         console.log(fileData.markers.head1);
+        console.log('fileData: ', fileData);
         setRecoData(fileData);
       } catch (error) {
         console.error('Error loading PLY file:', error);
@@ -572,6 +574,12 @@ function PlyViewer({
       const [x, y, z] = position;
       mesh.position.set(x, y, z); // Set the position of the mesh
     }
+
+    // Set render order for transparent objects to ensure proper rendering
+    if (material.transparent) {
+      mesh.renderOrder = 100; // Render transparent objects after opaque ones
+    }
+
     scene.add(mesh);
 
     setMeshes((prevMeshes) => [...prevMeshes, mesh]); // Add mesh to state
@@ -606,12 +614,17 @@ function PlyViewer({
       // Create a material for the mesh
       const material = new THREE.MeshStandardMaterial({
         vertexColors: geometry.hasAttribute('color'),
-        flatShading: true,
+        flatShading: false, // Use smooth shading for better back-face visibility
         metalness: 0.1,
         roughness: 0.5,
         transparent: true,
         opacity: 0.8,
+        side: THREE.DoubleSide, // Render both sides so visible from any angle
+        // Add emissive to ensure visibility even when not directly lit
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.1,
       });
+      geometry.computeVertexNormals(); // Ensure normals are computed for proper lighting on both sides
 
       // Add the mesh to the scene
       addMeshToScene(selectedName, geometry, material);
@@ -649,7 +662,18 @@ function PlyViewer({
     const mesh = meshes.find((m) => m.name === meshName);
     if (mesh) {
       mesh.material.opacity = opacity;
-      mesh.material.transparent = true;
+      mesh.material.transparent = opacity < 1;
+      // Ensure double-sided rendering for transparent objects
+      if (opacity < 1) {
+        mesh.material.side = THREE.DoubleSide;
+        mesh.renderOrder = 100; // Render transparent objects after opaque ones
+        // Compute normals to ensure proper lighting on both sides
+        if (mesh.geometry) {
+          mesh.geometry.computeVertexNormals();
+        }
+      } else {
+        mesh.renderOrder = 0; // Reset render order for opaque objects
+      }
     }
   };
 
@@ -815,6 +839,14 @@ function PlyViewer({
       6: { x: -0.5, y: -0.86, z: 0 }, // Contact 6 adjustment
       7: { x: -0.5, y: 0.86, z: 0 }, // Contact 7 adjustment
       8: { x: 0, y: 0, z: 0 }, // Contact 8 adjustment
+      9: { x: 0, y: 0, z: 0 }, // Contact 9 adjustment
+      10: { x: 0, y: 0, z: 0 }, // Contact 10 adjustment
+      11: { x: 0, y: 0, z: 0 }, // Contact 11 adjustment
+      12: { x: 0, y: 0, z: 0 }, // Contact 12 adjustment
+      13: { x: 0, y: 0, z: 0 }, // Contact 13 adjustment
+      14: { x: 0, y: 0, z: 0 }, // Contact 14 adjustment
+      15: { x: 0, y: 0, z: 0 }, // Contact 15 adjustment
+      16: { x: 0, y: 0, z: 0 }, // Contact 16 adjustment
     };
     keyLevels = {
       1: 1,
@@ -825,6 +857,22 @@ function PlyViewer({
       6: 3,
       7: 3,
       8: 4,
+      9: 5,
+      10: 5,
+      11: 5,
+      12: 5,
+      13: 5,
+      14: 5,
+      15: 5,
+      16: 5,
+      17: 6,
+      18: 6,
+      19: 6,
+      20: 6,
+      21: 6,
+      22: 6,
+      23: 6,
+      24: 6,
     };
   }
   const VTASpheresRef = useRef(null); // Store references to each sphere for updating later
@@ -916,7 +964,11 @@ function PlyViewer({
     const newAllVolAmpToggles = {};
 
     console.log('Imported Amplitude: ', jsonData.amplitude);
-
+    const ls1ContactKeys = Object.keys(jsonData.Ls1).filter(
+      (key) => key.startsWith('k')
+    );
+    console.log('Number of contacts in Ls1:', ls1ContactKeys.length);
+    const loopSize = ls1ContactKeys.length;
     for (let j = 1; j < 5; j++) {
       try {
         newTotalAmplitude[j] = jsonData.amplitude[1][j - 1];
@@ -948,7 +1000,7 @@ function PlyViewer({
         newAllVolAmpToggles[j + 4] = 'right';
       }
 
-      for (let i = 0; i < 9; i++) {
+      for (let i = 0; i < loopSize; i++) {
         const dynamicKey = `k${i + 7}`;
         const dynamicKey1 = `k${i}`;
 
@@ -1124,7 +1176,16 @@ function PlyViewer({
           right.z * directionOffset.x +
           forward.z * directionOffset.y +
           direction.z * directionOffset.z;
-
+        // Side < 5 is left, side > 5 is right
+        if (side < 5) {
+          newPosition.x = reconstruction.coords_left[contactId][0];
+          newPosition.y = reconstruction.coords_left[contactId][1];
+          newPosition.z = reconstruction.coords_left[contactId][2];
+        } else {
+          newPosition.x = reconstruction.coords_right[contactId][0];
+          newPosition.y = reconstruction.coords_right[contactId][1];
+          newPosition.z = reconstruction.coords_right[contactId][2];
+        }
         // Calculate amplitude based on contactQuantity
         const contactAmplitude = (contactQuantity / 100) * newAmplitude;
 
@@ -1199,12 +1260,17 @@ function PlyViewer({
       const material = new THREE.MeshStandardMaterial({
         // vertexColors: electrodeGeometry.hasAttribute('color'),
         color: new THREE.Color(0.1, 0.5, 0.8),
-        flatShading: true,
+        flatShading: false, // Use smooth shading for better back-face visibility
         metalness: 0.1,
         roughness: 0.5,
         transparent: true,
         opacity: 0.8,
+        side: THREE.DoubleSide, // Render both sides so visible from any angle
+        // Add emissive to ensure visibility even when not directly lit
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.1,
       });
+      electrodeGeometry.computeVertexNormals(); // Ensure normals are computed for proper lighting on both sides
 
       // Add the mesh to the scene
       addMeshToScene(
@@ -1428,7 +1494,18 @@ function PlyViewer({
           right.z * directionOffset.x +
           forward.z * directionOffset.y +
           direction.z * directionOffset.z;
-
+        console.log('recoData: ', recoData);
+        console.log('Side: ', side);
+        console.log('contactId: ', contactId);
+        if (side < 5) {
+          newPosition.x = recoData.coords_left[contactId - 1][0];
+          newPosition.y = recoData.coords_left[contactId - 1][1];
+          newPosition.z = recoData.coords_left[contactId - 1][2];
+        } else {
+          newPosition.x = recoData.coords_right[contactId - 1][0];
+          newPosition.y = recoData.coords_right[contactId - 1][1];
+          newPosition.z = recoData.coords_right[contactId - 1][2];
+        }
         newCoords.push([newPosition.x, newPosition.y, newPosition.z]);
         // Calculate amplitude based on contactQuantity
         const contactAmplitude = (contactQuantity / 100) * amplitude;
@@ -1679,20 +1756,42 @@ function PlyViewer({
 
       // const camera = new THREE.PerspectiveCamera(75, 0.5, 0.1, 1000); // 1 is the aspect ratio (square)
       const renderer = new THREE.WebGLRenderer({ antialias: true });
+      // Enable proper transparency sorting
+      renderer.sortObjects = true;
       // renderer.setSize(300, 600); // Set smaller size
       renderer.setSize(500, 500);
       mountRef.current.appendChild(renderer.domElement);
 
       const secondaryRenderer = new THREE.WebGLRenderer({ antialias: true });
+      // Enable proper transparency sorting
+      secondaryRenderer.sortObjects = true;
       secondaryRenderer.setSize(500, 250);
       secondaryMountRef.current.appendChild(secondaryRenderer.domElement);
 
-      const ambientLight = new THREE.AmbientLight(0xffffff, 1);
+      const ambientLight = new THREE.AmbientLight(0xffffff, 1.5); // Increased intensity for better back-face visibility
       scene.add(ambientLight);
 
-      const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2);
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8); // Reduced to balance with ambient
       directionalLight.position.set(-5, -5, 5).normalize();
       scene.add(directionalLight);
+
+      // Add a second directional light from the opposite side for better back-face illumination
+      const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.5);
+      directionalLight2.position.set(5, 5, -5).normalize();
+      scene.add(directionalLight2);
+
+      // Add backlighting - lights positioned behind the camera to illuminate back faces
+      const backLight1 = new THREE.DirectionalLight(0xffffff, 0.6);
+      backLight1.position.set(0, 0, -10).normalize(); // Behind the scene
+      scene.add(backLight1);
+
+      const backLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
+      backLight2.position.set(10, 10, -10).normalize(); // Behind and to the side
+      scene.add(backLight2);
+
+      const backLight3 = new THREE.DirectionalLight(0xffffff, 0.4);
+      backLight3.position.set(-10, 10, -10).normalize(); // Behind and to the other side
+      scene.add(backLight3);
 
       // OrbitControls setup (only initialize once)
       const controls = new OrbitControls(camera, renderer.domElement);
@@ -1862,14 +1961,17 @@ function PlyViewer({
       const geometry = loader.parse(atlas);
       const material = new THREE.MeshStandardMaterial({
         vertexColors: geometry.hasAttribute('color'),
-        flatShading: true,
+        flatShading: false, // Use smooth shading for better back-face visibility
         metalness: 0.1,
         roughness: 0.5,
         transparent: true,
         opacity: 0.8,
+        side: THREE.DoubleSide, // Render both sides so visible from any angle
+        // Add emissive to ensure visibility even when not directly lit
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.1,
       });
-
-      geometry.computeVertexNormals();
+      geometry.computeVertexNormals(); // Ensure normals are computed for proper lighting on both sides
       const mesh = new THREE.Mesh(geometry, material);
       scene.add(mesh);
     }
@@ -3943,8 +4045,13 @@ function PlyViewer({
         vertexColors: true,
         transparent: true,
         opacity: 0.8,
-        flatShading: true,
+        flatShading: false, // Use smooth shading for better back-face visibility
+        side: THREE.DoubleSide, // Render both sides so visible from any angle
+        // Add emissive to ensure visibility even when not directly lit
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.1,
       });
+      geometry.computeVertexNormals(); // Ensure normals are computed for proper lighting on both sides
 
       return { geometry, material };
     } catch (error) {

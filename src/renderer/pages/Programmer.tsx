@@ -1,6 +1,6 @@
 /**
  * Programmer Component
- * 
+ *
  * This is the main programming interface for the Lead-DBS application.
  * It handles stimulation parameter configuration, electrode management,
  * and data import/export functionality. The component supports both
@@ -18,7 +18,7 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import GroupArchitecture from '../components/group/GroupArchitecture';
 import { PatientContext } from '../contexts/PatientContext';
 import initializeS from '../utils/InitializeS';
-import electrodeModels from '../assets/data/electrodeModels.json';
+import electrodeModelsSpecs from '../assets/data/electrodeModels.json';
 
 // Type definitions
 interface Patient {
@@ -64,10 +64,10 @@ function Programmer() {
   const allPatients = useContext(PatientContext);
   const location = useLocation();
   const navigate = useNavigate();
-  
+
   // Extract data from location state
   const { patient, timeline, directoryPath, leadDBS } = (location.state as LocationState) || {};
-  
+
   // State management
   const electrodeList: any[] = [];
   const [patientName, setPatientName] = useState<string>('');
@@ -123,10 +123,10 @@ function Programmer() {
       displayName: 'Boston Scientific Vercise Cartesia HX',
       value: 'boston_vercise_cartesia_hx',
     },
-    // {
-    //   displayName: 'Boston Scientific Vercise Cartesia X',
-    //   value: 'boston_vercise_cartesia_x',
-    // },
+    {
+      displayName: 'Boston Scientific Vercise Cartesia X',
+      value: 'boston_vercise_cartesia_x',
+    },
     {
       displayName: 'Abbott ActiveTip (6146-6149)',
       value: 'abbott_activetip_2mm',
@@ -277,7 +277,12 @@ function Programmer() {
     const newAllTogglePositions: Record<number, any> = {};
 
     console.log('Imported Amplitude: ', jsonData.amplitude);
-
+    // To get the number of elements (contacts) in jsonData.Ls1 (excluding keys like 'case', 'amp', etc.):
+    const ls1ContactKeys = Object.keys(jsonData.Ls1).filter(
+      (key) => key.startsWith('k')
+    );
+    console.log('Number of contacts in Ls1:', ls1ContactKeys.length);
+    const loopSize = ls1ContactKeys.length;
     for (let j = 1; j < 5; j++) {
       newTotalAmplitude[j+4] = jsonData.amplitude[0][j - 1];
       newTotalAmplitude[j] = jsonData.amplitude[1][j - 1];
@@ -302,7 +307,7 @@ function Programmer() {
         newAllTogglePositions[j + 4] = 'V';
       }
 
-      for (let i = 0; i < 9; i++) {
+      for (let i = 0; i < loopSize; i++) {
         const dynamicKey = `k${i + 1}`;
         const dynamicKey1 = `k${i + 1}`;
 
@@ -421,9 +426,12 @@ function Programmer() {
         // let electrodes = 'Boston Vercise Directed';
         let electrodes = patient.elmodel;
         const outputElectrode = handleImportedElectrode(electrodes);
+        console.log('Output Electrode: ', outputElectrode);
+        console.log('Electrode Models: ', electrodeModels);
+        console.log('Electrode Model: ', electrodeModelsSpecs[outputElectrode]);
         const patientData = initializeS(
           timeline,
-          electrodeModels[outputElectrode].numel,
+          electrodeModelsSpecs[outputElectrode].numel,
         );
         console.log('Patient Data: ', patientData);
         const processedS = patientData

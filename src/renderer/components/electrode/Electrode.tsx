@@ -1,6 +1,6 @@
 /**
  * Electrode Component
- * 
+ *
  * This is a complex component that renders and manages individual electrode
  * configurations. It handles contact selection, stimulation parameters,
  * visualization models, and provides a comprehensive interface for electrode
@@ -251,7 +251,7 @@ function Electrode({
         // );
         const face = newFace[contactNum];
         newLevel[contactNum] = parseFloat(levelIndex) + 1;
-        // elspec.tipiscontact = 1;
+        elspec.tipiscontact = 1;
         if (face === 'center' || face === 'all') {
           if (elspec.tipiscontact === 1 && contactNum === 1) {
             console.log(elspec.tipiscontact);
@@ -617,18 +617,18 @@ function Electrode({
     setSelectedValues(updatedSelectedValues);
     // setAnimation(updatedAnimationValues);
     // console.log(animation);
-    if (IPG === 'Abbott') {
-      Object.keys(updatedSelectedValues).forEach((thing) => {
-        const newvalue = updatedSelectedValues[thing];
-        if (newvalue === 'left') {
-          updatedQuantities[key] = 0;
-        } else if (newvalue === 'center') {
-          updatedQuantities[key] = 10;
-        } else if (newvalue === 'right') {
-          updatedQuantities[key] = 10;
-        }
-      });
-    }
+    // if (IPG === 'Abbott') {
+    //   Object.keys(updatedSelectedValues).forEach((thing) => {
+    //     const newvalue = updatedSelectedValues[thing];
+    //     if (newvalue === 'left') {
+    //       updatedQuantities[thing] = 0;
+    //     } else if (newvalue === 'center') {
+    //       updatedQuantities[thing] = updatedQuantities[thing];
+    //     } else if (newvalue === 'right') {
+    //       updatedQuantities[thing] = updatedQuantities[thing];
+    //     }
+    //   });
+    // }
     setQuantities(updatedQuantities);
     setLastChangedKey(key);
   };
@@ -1373,79 +1373,6 @@ function Electrode({
     return false;
   }
 
-  // function roundAlloc(
-  //   beforeLevel,
-  //   nextLevel,
-  //   levelAboveTotal,
-  //   levelBelowTotal,
-  //   values,
-  //   amtOnContacts,
-  // ) {
-  //   // let oldTotal = 0;
-  //   let newAboveTotal = 0;
-  //   let newBelowTotal = 0;
-  //   let belowTotal = levelBelowTotal;
-  //   let aboveTotal = levelAboveTotal;
-  //   Object.keys(values).forEach((key) => {
-  //     if (level[key] === beforeLevel) {
-  //       values[key] = Math.floor(values[key] + 0.5);
-  //       newBelowTotal += values[key];
-  //     } else if (level[key] === nextLevel) {
-  //       values[key] = Math.floor(values[key] + 0.5);
-  //       newAboveTotal += values[key];
-  //     }
-  //     // values[key] = Math.floor(values[key] + 0.5);
-  //     // newTotal += values[key];
-  //   });
-  //   // console.log('old', oldTotal);
-  //   // console.log('new', newTotal);
-  //   belowTotal = Math.floor(belowTotal + 0.5);
-  //   const belowDiff = belowTotal - newBelowTotal;
-  //   aboveTotal = Math.floor(aboveTotal + 0.5);
-  //   const aboveDiff = aboveTotal - newAboveTotal;
-  //   let doneUpdate = 0;
-  //   console.log('above', aboveDiff);
-  //   console.log('below', belowDiff);
-  //   Object.keys(values).forEach((key) => {
-  //     if (values[key] !== 0 && doneUpdate === 0 && level[key] === beforeLevel) {
-  //       values[key] += belowDiff;
-  //       doneUpdate = 1;
-  //     }
-  //   });
-  //   doneUpdate = 0;
-  //   console.log('below level total: ', belowTotal);
-  //   Object.keys(values).forEach((key) => {
-  //     if (values[key] !== 0 && doneUpdate === 0 && level[key] === nextLevel) {
-  //       values[key] += aboveDiff;
-  //       doneUpdate = 1;
-  //     }
-  //     if (amtOnContacts === 3) {
-  //       if (aboveTotal % 3 === 0) {
-  //         if (level[key] === nextLevel) {
-  //           values[key] = aboveTotal / 3;
-  //         }
-  //       }
-  //       if (belowTotal % 3 === 0) {
-  //         if (level[key] === beforeLevel) {
-  //           values[key] = belowTotal / 3;
-  //           console.log('values[key]', values[key]);
-  //         }
-  //       }
-  //     } else if (amtOnContacts === 1) {
-  //       console.log('made it here');
-  //       if (belowTotal % 3 === 0) {
-  //         console.log(beforeLevel);
-  //         if (level[key] === beforeLevel) {
-  //           console.log('yes');
-  //           values[key] = belowTotal / 3;
-  //           console.log('values[key]', values[key]);
-  //         }
-  //       }
-  //     }
-  //   });
-  //   return values;
-  // }
-
   function roundAllocUp(
     beforeLevel,
     nextLevel,
@@ -1566,110 +1493,6 @@ function Electrode({
     });
     return values;
   }
-
-  // const newHandleUpButton = () => {
-  //   // newRoundToHundred();
-  //   console.log('passed');
-  //   console.log('quantities: ', quantities);
-  //   vectorMakeUp();
-  //   const newQuantities = newRoundToHundred();
-  //   console.log('newQuantities: ', newQuantities);
-  //   const updatedQuantities = { ...newQuantities };
-  //   const updatedSelectedValues = { ...selectedValues };
-  //   const levelIncrement = 0.1;
-  //   const previousLevel = Math.floor(vectorLevel);
-  //   vectorLevel += levelIncrement;
-  //   const currentLevel = Math.floor(vectorLevel);
-
-  //   console.log('currentLevel: ', currentLevel);
-  //   console.log('previousLevel: ', previousLevel);
-  //   const levelBelow =
-  //     currentLevel !== previousLevel ? previousLevel : Math.floor(vectorLevel);
-  //   // const levelBelow = Math.floor(vectorLevel);
-  //   // const levelAbove = Math.ceil(vectorLevel);
-  //   const levelAbove = levelBelow + 1;
-  //   console.log('Level Below', levelBelow);
-  //   console.log('level Above', levelAbove);
-  //   const percDiff = vectorLevel - levelBelow;
-  //   const levelBelowQuantityTotal = 100 * (1 - percDiff);
-  //   const levelAboveQuantityTotal = 100 - levelBelowQuantityTotal;
-  //   // Want to figure out how many contacts are "on" at a level
-
-  //   const onContacts = getOnContacts(levelBelow);
-  //   const numOnContacts = getOnContacts(levelBelow).length;
-  //   const aboveOnContacts = getOnContacts(levelAbove);
-  //   const numAboveOnContacts = aboveOnContacts.length;
-  //   console.log('On Contacts', onContacts);
-  //   Object.keys(level).forEach((key) => {
-  //     // dealing with level below
-  //     // vectorMakeUp();
-  //     if (level[key] === levelBelow) {
-  //       if (face[key] === 'all') {
-  //         updatedQuantities[key] = levelBelowQuantityTotal;
-  //       } else if (
-  //         face[key] !== 'all' &&
-  //         numOnContacts !== 0 &&
-  //         updatedQuantities[key] !== 0
-  //       ) {
-  //         Object.keys(onContacts).forEach((contact) => {
-  //           console.log('key: ', key);
-  //           if (parseFloat(key) === onContacts[contact]) {
-  //             // console.log('madeItHere');
-  //             updatedQuantities[key] =
-  //               parseFloat(updatedQuantities[key]) -
-  //               (100 * levelIncrement) / numOnContacts;
-  //           }
-  //         });
-  //       }
-  //       // if (levelBelowQuantityTotal === 0) {
-  //       //   updatedSelectedValues[key] = 'left';
-  //       // }
-  //     }
-  //     if (level[key] === levelAbove) {
-  //       if (face[key] !== 'all') {
-  //         if (segmentedContact(levelBelow)) {
-  //           Object.keys(onContacts).forEach((contact) => {
-  //             if (face[key] === face[onContacts[contact]]) {
-  //               updatedQuantities[key] =
-  //                 parseFloat(updatedQuantities[key]) +
-  //                 (100 * levelIncrement) / numOnContacts;
-  //               updatedSelectedValues[key] =
-  //                 updatedSelectedValues[onContacts[contact]];
-  //             }
-  //           });
-  //         } else {
-  //           let levelBelowKey = 0;
-  //           Object.keys(level).forEach((keys) => {
-  //             if (level[keys] === levelBelow) {
-  //               levelBelowKey = keys;
-  //             }
-  //           });
-  //           updatedQuantities[key] =
-  //             parseFloat(updatedQuantities[key]) + (100 * levelIncrement) / 3;
-  //           updatedSelectedValues[key] = updatedSelectedValues[levelBelowKey];
-  //         }
-  //       }
-  //       if (face[key] === 'all') {
-  //         updatedQuantities[key] = levelAboveQuantityTotal;
-  //         updatedSelectedValues[key] = updatedSelectedValues[onContacts[0]];
-  //       }
-  //     }
-  //   });
-  //   setSelectedValues(updatedSelectedValues);
-  //   console.log('before level', previousLevel);
-  //   // roundAllocUp(
-  //   //   previousLevel,
-  //   //   levelAbove,
-  //   //   levelAboveQuantityTotal,
-  //   //   levelBelowQuantityTotal,
-  //   //   updatedQuantities,
-  //   //   numAboveOnContacts,
-  //   //   numOnContacts,
-  //   // );
-  //   easyRoundUp(updatedQuantities);
-  //   setQuantities(updatedQuantities);
-  //   checkQuantitiesAndValues(updatedQuantities, updatedSelectedValues);
-  // };
 
   const newHandleUpButton = () => {
     // newRoundToHundred();
@@ -3488,14 +3311,15 @@ function Electrode({
     const calculateQuantitiesWithDistributionAbbott = () => {
       // Calculate the quantity increment for 'center' and 'right' values
       const total = totalAmplitude;
-
+      console.log('selectedValues: ', selectedValues);
+      console.log('quantities: ', quantities);
       // total = totalAmplitude;
       console.log('total: ', total);
       const centerCount = Object.values(selectedValues).filter(
         (value) => value === 'center',
       ).length;
       const centerQuantityIncrement = centerCount > 0 ? total / centerCount : 0;
-      // console.log('CenterCount: ', centerCount);
+      console.log('CenterCount: ', centerCount);
 
       const rightCount = Object.values(selectedValues).filter(
         (value) => value === 'right',
@@ -4032,7 +3856,14 @@ function Electrode({
                 </div>
               ))}
             </div>
-            <div className="left-contacts-test">
+            <div
+              className="left-contacts-test"
+              style={
+                elspec.matfname === 'boston_vercise_cartesia_hx'
+                  ? { marginTop: '595px' }
+                  : undefined
+              }
+            >
               {leftContacts.map((Lcon) => (
                 <div
                   // className={
@@ -4150,8 +3981,14 @@ function Electrode({
               </div>
             ))}
           </div>
-          <div className="right-contacts-test">
-            {rightContacts.map((rCon) => (
+          <div
+              className="right-contacts-test"
+              style={
+                elspec.matfname === 'boston_vercise_cartesia_hx'
+                  ? { marginTop: '788px' }
+                  : undefined
+              }
+            >            {rightContacts.map((rCon) => (
               <div className="image-item-right">
                 <div className="image-container-right">
                   {React.cloneElement(rCon, {

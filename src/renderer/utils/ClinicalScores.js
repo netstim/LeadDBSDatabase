@@ -10,6 +10,9 @@ import BoxPlotComponent from '../components/analysis/BoxPlotComponent';
 import UPDRSAnalysisComponent from '../components/analysis/UPDRSAnalysisComponent';
 import '../assets/icons/icons.css';
 
+// Use direct file paths - no webpack processing needed
+// These are just image files that can be loaded directly
+
 function ClinicalScores() {
   const location = useLocation();
   const { patient, timeline, directoryPath, leadDBS } = location.state || {};
@@ -84,19 +87,52 @@ function ClinicalScores() {
     loadScores();
   }, []);
 
-  function importAll(r) {
-    let images = {};
-    r.keys().forEach((item) => {
-      const key = item.replace('./', '').replace(/\.[^/.]+$/, ''); // Remove './' and file extension
-      images[key] = r(item);
-    });
-    return images;
-  }
-
-  const UPDRSImages = importAll(
-    require.context('../assets/icons', false, /\.(PNG|jpe?g|svg|png)$/),
-  );
-  console.log('UPDRSImages: ', UPDRSImages);
+  // Map of UPDRS keys to direct image file paths
+  // Simple relative paths from the renderer assets folder
+  const UPDRSImages = {
+    '3-1_Speech': '../assets/icons/3-1_Speech.PNG',
+    '3-2_Facial-expression': '../assets/icons/3-2_Facial-expression.PNG',
+    '3-3_Rigidity-neck': '../assets/icons/3-3_Rigidity-neck.PNG',
+    '3-3_Rigidity_RUE': '../assets/icons/3-3_Rigidity_RUE.PNG',
+    '3-3_Rigidity_LUE': '../assets/icons/3-3_Rigidity_LUE.PNG',
+    '3-3_Rigidity_RLE': '../assets/icons/3-3_Rigidity_RLE.PNG',
+    '3-3_Rigidity_LLE': '../assets/icons/3-3_Rigidity_LLE.PNG',
+    '3-4_Finger-tapping_R': '../assets/icons/3-4_Finger-tapping_R.PNG',
+    '3-4_Finger-tapping_L': '../assets/icons/3-4_Finger-tapping_L.PNG',
+    '3-5_Hand-movements_R': '../assets/icons/3-5_Hand-movements_R.PNG',
+    '3-5_Hand-movements_L': '../assets/icons/3-5_Hand-movements_L.PNG',
+    '3-6_Pronation-supination-R':
+      '../assets/icons/3-6_Pronation-supination-R.PNG',
+    '3-6_Pronation-supination-L':
+      '../assets/icons/3-6_Pronation-supination-L.PNG',
+    '3-7_Toe-tapping_R': '../assets/icons/3-7_Toe-tapping_R.PNG',
+    '3-7_Toe-tapping_L': '../assets/icons/3-7_Toe-tapping_L.PNG',
+    '3-8_Leg-agility_R': '../assets/icons/3-8_Leg-agility_R.PNG',
+    '3-8_Leg-agility_L': '../assets/icons/3-8_Leg-agility_L.PNG',
+    '3-9_Arise-from-chair': '../assets/icons/3-9_Arise-from-chair.PNG',
+    '3-10_Gait': '../assets/icons/3-10_Gait.PNG',
+    '3-11_Freezing-of-gait': '../assets/icons/3-11_Freezing-of-gait.PNG',
+    '3-12_Postural-stability': '../assets/icons/3-12_Postural-stability.PNG',
+    '3-13_Posture': '../assets/icons/3-13_Posture.PNG',
+    '3-14_Global-spontaneity-of-movement':
+      '../assets/icons/3-14_Global-spontaneity-of-movement.PNG',
+    '3-15_Postural-tremor-of-hands-R':
+      '../assets/icons/3-15_Postural-tremor-of-hands-R.PNG',
+    '3-15_Postural-tremor-of-hands-L':
+      '../assets/icons/3-15_Postural-tremor-of-hands-L.PNG',
+    '3-16_Kinetic-tremor-of-the-hands_R':
+      '../assets/icons/3-16_Kinetic-tremor-of-the-hands_R.PNG',
+    '3-16_Kinetic-tremor-of-the-hands_L':
+      '../assets/icons/3-16_Kinetic-tremor-of-the-hands_L.PNG',
+    '3-17_Rest-tremor_RUE': '../assets/icons/3-17_Rest-tremor_RUE.PNG',
+    '3-17_Rest-tremor_LUE': '../assets/icons/3-17_Rest-tremor_LUE.PNG',
+    '3-17_Rest-tremor-amp_RLE': '../assets/icons/3-17_Rest-tremor-amp_RLE.PNG',
+    '3-17_Rest-tremor-amp_LLE': '../assets/icons/3-17_Rest-tremor-amp_LLE.PNG',
+    '3-17_Rest-tremor-amplitude_lip-jaw':
+      '../assets/icons/3-17_Rest-tremor-amplitude_lip-jaw.PNG',
+    '3-18_Constancy-of-rest-tremor':
+      '../assets/icons/3-18_Constancy-of-rest-tremor.PNG',
+  };
   const YBOCS = {
     'Time occupied by obsessive thoughts': 0,
     'Interference due to obsessive thoughts': 0,
@@ -207,7 +243,6 @@ function ClinicalScores() {
       // Event listener for import-file
       const handleImportFile = (arg) => {
         const importedScores = arg;
-        console.log('importedScores: ', importedScores);
         if (importedScores === 'File not found') {
           setAllScores(totalScores);
           setPatients([
@@ -361,26 +396,56 @@ function ClinicalScores() {
                   {headerChunk.map((key) => (
                     <th
                       key={key}
-                      style={{ whiteSpace: 'wrap', minWidth: '80px', border: 'none' }}
+                      style={{
+                        whiteSpace: 'wrap',
+                        minWidth: '80px',
+                        border: 'none',
+                      }}
                     >
                       {/* {key} */}
-                      {selectedScoreType === 'UPDRS' && (
-                        <div className="tooltip-container">
-                          <img
-                            src={UPDRSImages[keyMapping[key]]}
-                            alt={key}
-                            title={key}
-                            className="updrs-image"
-                            // style={{
-                            //   opacity: calculateOpacity(
-                            //     patients[0][timePoint][key],
-                            //   ),
-                            // }}
-                          />
-                          <br />
-                          <span className="tooltip-text">{key}</span>
-                        </div>
-                      )}
+                      {selectedScoreType === 'UPDRS' &&
+                        (() => {
+                          const imageKey = keyMapping[key];
+                          const imageSrc = imageKey
+                            ? UPDRSImages[imageKey]
+                            : null;
+                          if (!imageKey) {
+                            console.warn(`No keyMapping found for: ${key}`);
+                          } else if (!imageSrc) {
+                            console.warn(
+                              `Image not found for key "${key}" with mapping "${imageKey}". Available images:`,
+                              Object.keys(UPDRSImages),
+                            );
+                          }
+                          return imageKey && imageSrc ? (
+                            <div className="tooltip-container">
+                              <img
+                                src={imageSrc}
+                                alt={key}
+                                title={key}
+                                className="updrs-image"
+                                onError={(e) => {
+                                  console.error(
+                                    `Failed to load image for ${key} (mapped to ${imageKey}):`,
+                                    imageSrc,
+                                  );
+                                  e.target.style.display = 'none';
+                                }}
+                                // style={{
+                                //   opacity: calculateOpacity(
+                                //     patients[0][timePoint][key],
+                                //   ),
+                                // }}
+                              />
+                              <br />
+                              <span className="tooltip-text">{key}</span>
+                            </div>
+                          ) : (
+                            <div className="tooltip-container">
+                              <span className="tooltip-text">{key}</span>
+                            </div>
+                          );
+                        })()}
                       {selectedScoreType !== 'UPDRS' && (
                         <div className="tooltip-text">{key}</div>
                       )}

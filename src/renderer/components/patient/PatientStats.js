@@ -101,7 +101,9 @@ function PatientStats({ patient, timeline, directoryPath, leadDBS }) {
   const initializePatientData = () => {
     const timepointData = {};
     timeline.forEach((timepoint) => {
-      timepointData[timepoint] = { ...initialScores };
+      // Initialize with scoretype nested structure to match imported data format
+      // Use selectedScoreType which defaults to 'UPDRS'
+      timepointData[timepoint] = { [selectedScoreType]: { ...initialScores } };
     });
     const reorderedScores = reorderScores(timepointData);
     return { id: patient.id, ...reorderedScores };
@@ -122,11 +124,20 @@ function PatientStats({ patient, timeline, directoryPath, leadDBS }) {
       const importedScores = {};
 
       const handleImportFile = (arg) => {
+        console.log('handleImportFile - received arg:', arg);
         Object.keys(timeline).forEach((key) => {
-          if (!arg[timeline[key]]) {
-            importedScores[timeline[key]] = { ...initialScores };
+          if (!arg[timeline[key]] || arg[timeline[key]] === 'Does not exist') {
+            // Initialize with scoretype nested structure
+            importedScores[timeline[key]] = {
+              [selectedScoreType]: { ...initialScores },
+            };
           } else {
+            // arg[timeline[key]] should already be { "UPDRS": {...}, "Y-BOCS": {...} }
             importedScores[timeline[key]] = arg[timeline[key]];
+            console.log(
+              `Imported scores for ${timeline[key]}:`,
+              importedScores[timeline[key]],
+            );
           }
         });
         const reorderedScores = reorderScores(importedScores);
@@ -146,6 +157,7 @@ function PatientStats({ patient, timeline, directoryPath, leadDBS }) {
     } else {
       console.error('ipcRenderer is not available');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const updateScore = (patientIndex, timePoint, field, value) => {
@@ -274,17 +286,91 @@ function PatientStats({ patient, timeline, directoryPath, leadDBS }) {
   const [currentStage, setCurrentStage] = useState('analyze');
   const [clinicalTimelines, setClinicalTimelines] = useState(null);
 
+  // Helper function to check if patient has any valid scores
+  const hasValidScores = (patientData, timelines) => {
+    if (!patientData || !Array.isArray(patientData) || patientData.length === 0) {
+      console.log('hasValidScores: Invalid patientData - not array or empty');
+      return false;
+    }
+
+    const patient = patientData[0];
+    if (!patient || !timelines || !Array.isArray(timelines) || timelines.length === 0) {
+      console.log('hasValidScores: Invalid patient or timelines');
+      return false;
+    }
+
+    // Check if there are any timelines with clinical data
+    const hasClinicalTimeline = timelines.some(
+      (timelineItem) => timelineItem.hasClinical,
+    );
+    if (!hasClinicalTimeline) {
+      console.log('hasValidScores: No clinical timelines found');
+      return false;
+    }
+
+    // Check if patient has any non-zero scores in any timeline
+    // Clinical scores are nested under scoretype: patient[timeline][scoretype]
+    const hasNonZeroScores = timelines.some((timelineItem) => {
+      if (timelineItem.hasClinical && patient[timelineItem.timeline]) {
+        const timelineData = patient[timelineItem.timeline];
+
+        // Check if timelineData has the selected scoretype
+        if (timelineData && typeof timelineData === 'object') {
+          // Check if the scoretype exists (e.g., UPDRS, Y-BOCS)
+          if (timelineData[selectedScoreType]) {
+            const scores = timelineData[selectedScoreType];
+            if (scores && typeof scores === 'object') {
+              const scoreValues = Object.values(scores);
+              const hasNonZero = scoreValues.some(
+                (score) => typeof score === 'number' && score !== 0 && !Number.isNaN(score),
+              );
+              if (hasNonZero) {
+                console.log(`hasValidScores: Found non-zero scores in ${timelineItem.timeline} for ${selectedScoreType}`);
+              }
+              return hasNonZero;
+            }
+          } else {
+            // Fallback: check if timelineData itself has scores (backwards compatibility)
+            const scoreValues = Object.values(timelineData);
+            const hasNonZero = scoreValues.some(
+              (score) => typeof score === 'number' && score !== 0 && !Number.isNaN(score),
+            );
+            if (hasNonZero) {
+              console.log(`hasValidScores: Found non-zero scores in ${timelineItem.timeline} (legacy format)`);
+            }
+            return hasNonZero;
+          }
+        }
+      }
+      return false;
+    });
+
+    if (hasNonZeroScores) {
+      console.log('hasValidScores: Valid scores found');
+      return true;
+    }
+
+    console.log('hasValidScores: No valid scores found');
+    return false;
+  };
+
   useEffect(() => {
     const timelinePromises = window.electron.ipcRenderer.invoke(
       'get-timelines',
       directoryPath,
       patient.id,
-      true,
+      leadDBS,
     );
-    timelinePromises.then((result) => {
-      console.log(result);
-      setClinicalTimelines(result);
-    });
+    timelinePromises
+      .then((result) => {
+        console.log(result);
+        setClinicalTimelines(result);
+        return result;
+      })
+      .catch((error) => {
+        console.error('Error fetching timelines:', error);
+        setClinicalTimelines([]);
+      });
     // Promise.all(timelinePromises)
     //   .then((allReceivedTimelines) => {
     //     const allFilteredTimelineNames = allReceivedTimelines.map(
@@ -304,7 +390,7 @@ function PatientStats({ patient, timeline, directoryPath, leadDBS }) {
     // .catch((error) => {
     //   console.error('Error fetching timelines for all patients:', error);
     // });
-  }, [patients]);
+  }, [directoryPath, patient.id, leadDBS]);
   // const [dataReady, setDataReady] = useState(false);
   // useEffect(() => {
   //   if (clinicalTimelines) {
@@ -373,7 +459,7 @@ function PatientStats({ patient, timeline, directoryPath, leadDBS }) {
           />
         </Container>
         <div style={{ display: 'flex', flexDirection: 'column', width: '700px', height: '1000px', overflowY: 'scroll' }}>
-          {currentStage === 'analyze' && clinicalTimelines && clinicalTimelines.length > 0 && selectedScoreType === 'UPDRS' && (
+          {currentStage === 'analyze' && clinicalTimelines && clinicalTimelines.length > 0 && hasValidScores(patients, clinicalTimelines) && (
             <UPDRSAnalysisComponent
               currentStage={currentStage}
               rawData={patients}
@@ -381,13 +467,13 @@ function PatientStats({ patient, timeline, directoryPath, leadDBS }) {
               scoretype={selectedScoreType}
             />
           )}
-          {currentStage === 'analyze' && clinicalTimelines && clinicalTimelines.length > 0 && selectedScoreType !== 'UPDRS' && (
-            <UPDRSAnalysisComponent
-              currentStage={currentStage}
-              rawData={patients}
-              clinicalTimelines={clinicalTimelines}
-              scoretype={selectedScoreType}
-            />
+          {currentStage === 'analyze' && clinicalTimelines && clinicalTimelines.length > 0 && !hasValidScores(patients, clinicalTimelines) && (
+            <div style={{ padding: '20px', textAlign: 'center' }}>
+              <p style={{ color: 'Black', fontWeight: 'bold', fontSize: '18px' }}>No scores available</p>
+              <p style={{ color: 'Gray', fontSize: '14px', marginTop: '10px' }}>
+                This patient does not have any {selectedScoreType} scores saved.
+              </p>
+            </div>
           )}
         </div>
       </div>

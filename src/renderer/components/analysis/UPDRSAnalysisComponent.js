@@ -23,19 +23,50 @@ function UPDRSAnalysisComponent({ currentStage, rawData, clinicalTimelines, scor
 
   useEffect(() => {
     console.log(clinicalTimelines, rawData);
-    const updatedRawData = { ...rawData };
-    console.log(updatedRawData);
-    Object.keys(clinicalTimelines).forEach((key) => {
-      console.log(clinicalTimelines[key].hasClinical);
-      console.log(updatedRawData[0][clinicalTimelines[key].timeline]);
-      if (!clinicalTimelines[key].hasClinical) {
-        delete updatedRawData[0][clinicalTimelines[key].timeline];
-        console.log(clinicalTimelines[key].timeline);
+    try {
+      // Check if rawData is valid
+      if (!rawData || !Array.isArray(rawData) || rawData.length === 0) {
+        console.warn('Invalid rawData provided to UPDRSAnalysisComponent');
+        return;
       }
-    });
-    console.log('rawData: ', rawData);
-    console.log('updatedRawData: ', updatedRawData);
-    setPlotData(updatedRawData);
+
+      // Check if clinicalTimelines is valid
+      if (!clinicalTimelines || !Array.isArray(clinicalTimelines) || clinicalTimelines.length === 0) {
+        console.warn('Invalid clinicalTimelines provided to UPDRSAnalysisComponent');
+        return;
+      }
+
+      // Create a deep copy of rawData to avoid mutating the original
+      const updatedRawData = rawData.map((patient) => ({ ...patient }));
+      console.log('UPDRSAnalysisComponent - updatedRawData:', updatedRawData);
+
+      // Safely check if updatedRawData[0] exists before accessing it
+      if (updatedRawData[0] && typeof updatedRawData[0] === 'object') {
+        clinicalTimelines.forEach((timeline) => {
+          if (timeline && typeof timeline === 'object') {
+            console.log('Timeline:', timeline.timeline, 'hasClinical:', timeline.hasClinical);
+            if (updatedRawData[0][timeline.timeline]) {
+              console.log(
+                'Data for timeline',
+                timeline.timeline,
+                ':',
+                updatedRawData[0][timeline.timeline],
+              );
+            }
+            // Remove timelines that don't have clinical data
+            if (!timeline.hasClinical && updatedRawData[0][timeline.timeline]) {
+              delete updatedRawData[0][timeline.timeline];
+              console.log('Removed timeline without clinical data:', timeline.timeline);
+            }
+          }
+        });
+      }
+      console.log('UPDRSAnalysisComponent - rawData:', rawData);
+      console.log('UPDRSAnalysisComponent - updatedRawData:', updatedRawData);
+      setPlotData(updatedRawData);
+    } catch (error) {
+      console.error('Error processing clinical timelines:', error);
+    }
   }, [clinicalTimelines, rawData]);
 
   const renderAnalysis = () => {
