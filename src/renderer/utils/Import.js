@@ -21,14 +21,14 @@ function Import({ leadDBS }) {
       displayName: 'Boston Scientific Vercise Directed',
       value: 'boston_vercise_directed',
     },
-    // {
-    //   displayName: 'Boston Scientific Vercise Cartesia HX',
-    //   value: 'boston_vercise_cartesia_hx',
-    // },
-    // {
-    //   displayName: 'Boston Scientific Vercise Cartesia X',
-    //   value: 'boston_vercise_cartesia_x',
-    // },
+    {
+      displayName: 'Boston Scientific Vercise Cartesia HX',
+      value: 'boston_vercise_cartesia_hx',
+    },
+    {
+      displayName: 'Boston Scientific Vercise Cartesia X',
+      value: 'boston_vercise_cartesia_x',
+    },
     {
       displayName: 'Abbott ActiveTip (6146-6149)',
       value: 'abbott_activetip_2mm',
@@ -594,31 +594,54 @@ function Import({ leadDBS }) {
     transition: 'background-color 0.3s ease, transform 0.2s ease',
   };
 
+  const downloadTemplate = async (templateName, displayName) => {
+    try {
+      // Use IPC to get the template file from the main process
+      const fileBuffer = await window.electron.ipcRenderer.invoke(
+        'download-template',
+        templateName,
+      );
+
+      // Create a Blob from the ArrayBuffer
+      const blob = new Blob([fileBuffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+
+      // Create a blob URL and trigger download
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = templateName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Clean up the blob URL
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error(`Error downloading template ${templateName}:`, error);
+      alert(
+        `Failed to download ${displayName || templateName}. Please check the console for details.`,
+      );
+    }
+  };
+
   const downloadTemplateClinicalScores = () => {
-    const link = document.createElement('a');
-    link.href = '/Clinical_Scores_Template.xlsx'; // Relative path to the file in the public directory
-    link.download = 'Clinical_Scores_Template.xlsx';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadTemplate(
+      'Clinical_Scores_Template.xlsx',
+      'Clinical Scores Template',
+    );
   };
 
   const downloadTemplateStimulationParameters = () => {
-    const link = document.createElement('a');
-    link.href = '/Stimulation_Parameters_Template.xlsx'; // Relative path to the file in the public directory
-    link.download = 'Stimulation_Parameters_Template.xlsx';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadTemplate(
+      'Stimulation_Parameters_Template.xlsx',
+      'Stimulation Parameters Template',
+    );
   };
 
   const downloadTemplateDemographics = () => {
-    const link = document.createElement('a');
-    link.href = '/Demographics_Template.xlsx'; // Relative path to the file in the public directory
-    link.download = 'Demographics_Template.xlsx';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadTemplate('Demographics_Template.xlsx', 'Demographics Template');
   };
 
   return (

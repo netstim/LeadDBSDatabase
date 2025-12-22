@@ -1,6 +1,6 @@
 /**
  * Patient Database Component
- * 
+ *
  * This component displays and manages the patient database. It provides functionality
  * for viewing, editing, searching, sorting, and exporting patient data. The component
  * integrates with the PatientContext for global state management and provides
@@ -28,8 +28,6 @@ import {
   TableSortLabel,
   Select,
   MenuItem,
-  AppBar,
-  Toolbar,
   Checkbox,
   Accordion,
   AccordionSummary,
@@ -40,7 +38,6 @@ import { Edit, Delete, Save, Cancel } from '@mui/icons-material';
 
 // Local Components
 import { PatientContext } from '../../contexts/PatientContext';
-import DatabaseStats from '../../utils/DatabaseStats';
 
 // Type definitions
 interface Patient {
@@ -56,11 +53,11 @@ interface PatientDatabaseProps {
 function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
   // Initialize IPC communication
   window.electron.ipcRenderer.sendMessage('import-inputdata-file', ['ping']);
-  
+
   // Context and navigation
   const { patients, setPatients } = useContext(PatientContext);
   const navigate = useNavigate();
-  
+
   // State management
   const [editRowId, setEditRowId] = useState<string | null>(null);
   const [editedPatient, setEditedPatient] = useState<Partial<Patient>>({});
@@ -339,6 +336,25 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
                   leadDBS,
                 },
               });
+            } else if (arg.type === 'seeg') {
+              let outputPatient = {};
+              let outputTimeline = '';
+              console.log(arg.patientname[0]);
+              Object.keys(patients).forEach((patient) => {
+                if (patients[patient].id === arg.patientname) {
+                  outputPatient = patients[patient];
+                  outputTimeline = arg.labels ? arg.labels[0] : arg.label;
+                  const leadDBS = true;
+                  navigate('/seeg', {
+                    state: {
+                      patient: outputPatient,
+                      timeline: outputTimeline,
+                      directoryPath,
+                      leadDBS,
+                    },
+                  });
+                }
+              });
             }
           }
         } catch (error) {
@@ -592,14 +608,14 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
               >
                 NiiVue
               </Button> */}
-              {/* <Button
+              <Button
                 // variant="contained"
                 // color="default"
                 onClick={() => navigate('/seeg')}
                 style={{ marginLeft: '5px' }}
               >
                 SEEG
-              </Button> */}
+              </Button>
               <Button
                 onClick={() => handleCreateMiniset()}
                 style={{ marginLeft: '5px' }}

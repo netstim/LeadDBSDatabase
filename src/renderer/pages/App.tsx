@@ -19,12 +19,12 @@ import GroupStats from '../components/group/GroupStats';
 import DatabaseStats from '../utils/DatabaseStats';
 import Import from '../utils/Import';
 import NiiViewer from '../components/viewers/NiiViewer';
-import SEEG from '../components/viewers/SEEG';
+import SEEG from './SEEG';
 import TestApp from '../niivue/ui/TestApp';
 
 /**
  * Main App Component
- * 
+ *
  * This is the root component of the Lead-DBS Programmer application.
  * It manages the overall application state including directory selection,
  * settings visibility, and routing between different views.
@@ -37,19 +37,11 @@ export default function App() {
   const [isLeadDBSFolder, setIsLeadDBSFolder] = useState<boolean | null>(null);
   const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   const [zoomLevel, setZoomLevel] = useState<number>(-1);
-  
+
   // Refs
   const containerRef = useRef<HTMLDivElement>(null);
-  
+
   // Constants
-  const plyFilePaths: string[] = [
-    '/Users/savirmadan/Documents/Localizations/OSF/LeadDBSTrainingDataset/derivatives/leaddbs/sub-15454/export/ply/anatomy.ply',
-    '/Users/savirmadan/Documents/Localizations/OSF/LeadDBSTrainingDataset/derivatives/leaddbs/sub-15454/export/ply/combined_electrodes.ply',
-    '/Users/savirmadan/Documents/Localizations/OSF/LeadDBSTrainingDataset/derivatives/leaddbs/sub-29781/export/ply/combined_electrodes.ply',
-    '/Users/savirmadan/Documents/Localizations/OSF/LeadDBSTrainingDataset/derivatives/leaddbs/sub-33544/export/ply/combined_electrodes.ply',
-    '/Users/savirmadan/Documents/Localizations/OSF/LeadDBSTrainingDataset/derivatives/leaddbs/sub-80206/export/ply/combined_electrodes.ply',
-    '/Users/savirmadan/Documents/Localizations/OSF/LeadDBSTrainingDataset/derivatives/leaddbs/sub-93127/export/ply/combined_electrodes.ply',
-  ];
   /**
    * Updates the window dimensions and notifies the main process
    */
@@ -125,7 +117,7 @@ export default function App() {
               element={
                 <div style={{ marginTop: '0px' }}>
                   <Navbar text="" color1="#375D7A" />
-                  
+
                   {/* Settings Panel */}
                   <div className="Navbar">
                     <SettingsIcon
@@ -151,15 +143,15 @@ export default function App() {
                           </p>
                         )}
                         <p className="lead-dbs-status">
-                          {isLeadDBSFolder 
-                            ? 'This is a Lead-DBS folder.' 
+                          {isLeadDBSFolder
+                            ? 'This is a Lead-DBS folder.'
                             : 'This is not a Lead-DBS folder.'
                           }
                         </p>
                       </div>
                     )}
                   </div>
-                  
+
                   {/* Main Patient Database Component */}
                   <PatientDatabase
                     key={String(renderKey)}
@@ -182,10 +174,10 @@ export default function App() {
                 </div>
               }
             />
-            
+
             {/* Programmer Route */}
             <Route path="/programmer" element={<Programmer />} />
-            
+
             {/* Clinical Scores Route */}
             <Route
               path="/clinical-scores"
@@ -195,7 +187,7 @@ export default function App() {
                 </div>
               }
             />
-            
+
             {/* Viewer Route */}
             <Route
               path="/viewer"
@@ -205,7 +197,7 @@ export default function App() {
                 </div>
               }
             />
-            
+
             {/* Custom Table Route */}
             <Route
               path="/custom-table"
@@ -215,7 +207,7 @@ export default function App() {
                 </div>
               }
             />
-            
+
             {/* Group Statistics Route */}
             <Route
               path="/group"
@@ -225,7 +217,7 @@ export default function App() {
                 </div>
               }
             />
-            
+
             {/* Database Statistics Route */}
             <Route
               path="/groupstats"
@@ -237,7 +229,7 @@ export default function App() {
                 </div>
               }
             />
-            
+
             {/* Import Route */}
             <Route
               path="/import"
@@ -247,7 +239,7 @@ export default function App() {
                 </div>
               }
             />
-            
+
             {/* NiiVue Viewer Route */}
             <Route
               path="/niivue"
@@ -259,14 +251,18 @@ export default function App() {
                 </div>
               }
             />
-            
+
             {/* SEEG Route */}
             <Route
               path="/seeg"
               element={
                 <div>
                   <Navbar text="Lead-SEEG" color1="#375D7A" />
-                  <SEEG />
+                  <div>
+                    <div style={{ marginTop: '100px' }}>
+                      <SEEG directoryPath={directoryPath} />
+                    </div>
+                  </div>
                 </div>
               }
             />

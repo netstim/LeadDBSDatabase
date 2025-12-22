@@ -711,7 +711,23 @@ export default function registerFileHandlers() {
     console.log('clinicalData: ', clinicalData);
 
     // Define the file path where you want to save the JSON data
-    const filePath = path.join('/Users/savirmadan/Downloads', 'allClinicalScores.json');
+    // Ask the user to select a folder where to save the file
+    const { dialog } = require('electron');
+    let filePath: string | undefined;
+
+    const result = await dialog.showOpenDialog({
+      title: 'Select a folder to save clinical data',
+      properties: ['openDirectory', 'createDirectory']
+    });
+
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+      // User cancelled; abort saving and reply with error
+      event.reply('download-clinical-data-error', 'User cancelled folder selection.');
+      return;
+    }
+
+    const selectedFolder = result.filePaths[0];
+    filePath = path.join(selectedFolder, 'allClinicalScores.json');
 
     try {
       // Convert the clinicalData to a JSON string
@@ -733,6 +749,72 @@ export default function registerFileHandlers() {
     const data = fs.readFileSync(clinicalDataPath, 'utf8');
     const clinicalData = JSON.parse(data);
     return clinicalData;
+  });
+
+  ipcMain.handle('read-seeg-file', async (event, filePath) => {
+    const data = fs.readFileSync(filePath.path, 'utf8');
+    return data;
+  });
+
+  ipcMain.on('save-file-seeg', async (event, data) => {
+    console.log('data: ', data);
+    const filePath = path.join(data.directoryPath, 'derivatives', 'leaddbs', data.selectedPatientId, 'stimulations', `${data.selectedPatientId}_stimparameters.tsv`);
+    const csvFilePath = path.join(data.directoryPath, 'derivatives', 'leaddbs', data.selectedPatientId, 'stimulations', `${data.selectedPatientId}_stimparameters.csv`);
+    fs.writeFileSync(filePath, data.TSV);
+    fs.writeFileSync(csvFilePath, data.CSV);
+  });
+
+  // Template download handlers
+  ipcMain.handle('download-template', async (event, templateName) => {
+    try {
+      let templatePath: string;
+
+      if (app.isPackaged) {
+        // In packaged app, extraResources are available at process.resourcesPath
+        // The public folder structure is preserved, so path is resources/public/templateName
+        templatePath = path.join(process.resourcesPath, 'public', templateName);
+
+        // Fallback: try alternative locations if the primary path doesn't exist
+        if (!fs.existsSync(templatePath)) {
+          const fallbackPaths = [
+            path.join(process.resourcesPath, templateName),
+            path.join(__dirname, '..', '..', 'public', templateName),
+          ];
+
+          const foundPath = fallbackPaths.find(p => fs.existsSync(p));
+          if (foundPath) {
+            templatePath = foundPath;
+          }
+        }
+      } else {
+        // In development, read from public folder relative to project root
+        templatePath = path.join(__dirname, '..', '..', '..', 'public', templateName);
+      }
+
+      if (!fs.existsSync(templatePath)) {
+        const errorMsg = `Template file not found: ${templateName}. Searched at: ${templatePath}`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+      }
+
+      const fileBuffer = fs.readFileSync(templatePath);
+      return fileBuffer.buffer;
+    } catch (error) {
+      console.error(`Error reading template ${templateName}:`, error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('load_seeg_reco', async (event, directoryPath, selectedPatientId) => {
+    const data = await fs.readFileSync(path.join(directoryPath, 'derivatives', 'leaddbs', selectedPatientId, 'clinical', `${selectedPatientId}_desc-reconstruction.json`), 'utf8');
+    const reconstructionData = JSON.parse(data);
+    return reconstructionData;
+  });
+
+  ipcMain.handle('load_patient_list', async (event, directoryPath) => {
+    const data = fs.readFileSync(path.join(directoryPath, 'participants.json'), 'utf8');
+    const patients = JSON.parse(data);
+    return patients;
   });
 
 }

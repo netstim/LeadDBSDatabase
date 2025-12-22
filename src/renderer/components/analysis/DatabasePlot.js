@@ -21,7 +21,7 @@ ChartJS.register(
   Legend
 );
 
-function DatabasePlot({ clinicalData }) {
+function DatabasePlot({ clinicalData, scoretype, timelineOrder }) {
   const [showPercentage, setShowPercentage] = useState(true);
 
   // Define a clean color palette
@@ -38,53 +38,21 @@ function DatabasePlot({ clinicalData }) {
     '#BAB0AC',
   ];
 
-  const datasets = clinicalData.map((patientData, index) => {
-    const patientID = patientData.id;
-    const timelines = Object.keys(patientData.clinicalData);
+  // Get all unique timelines that have data for the selected scoretype
+  const allTimelines = [
+    ...new Set(
+      clinicalData.flatMap((patient) =>
+        Object.keys(patient.clinicalData).filter(timeline =>
+          patient.clinicalData[timeline]?.[scoretype] !== undefined
+        )
+      )
+    )
+  ];
 
-    // Sort timelines with 'baseline' first, then months, then years
-    const orderedTimelines = timelines.sort((a, b) => {
-      if (a === 'baseline') return -1;
-      if (b === 'baseline') return 1;
-
-      const aIsMonth = a.includes('month');
-      const bIsMonth = b.includes('month');
-      const aIsYear = a.includes('year');
-      const bIsYear = b.includes('year');
-
-      if (aIsMonth && !bIsMonth) return -1;
-      if (!aIsMonth && bIsMonth) return 1;
-      if (aIsYear && !bIsYear) return 1;
-      if (!aIsYear && bIsYear) return -1;
-
-      return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-    });
-
-    // Calculate baseline total score for percentage calculation
-    const baselineScores = Object.values(patientData.clinicalData['baseline'] || {});
-    const baselineTotal = baselineScores.reduce((sum, score) => sum + score, 0) || 1;
-
-    // Calculate total scores for each ordered timeline
-    const data = orderedTimelines.map((timeline) => {
-      const scores = Object.values(patientData.clinicalData[timeline] || {});
-      const totalScore = scores.reduce((sum, score) => sum + score, 0);
-      return showPercentage
-        ? ((baselineTotal - totalScore) / baselineTotal) * 100 // Calculate percentage improvement
-        : totalScore;
-    });
-
-    return {
-      label: `Patient ${patientID}`,
-      data,
-      fill: false,
-      borderColor: colorPalette[index % colorPalette.length], // Use colors from the palette
-      tension: 0.2,
-      spanGaps: false,
-    };
-  });
-
-  const labels = clinicalData[0]
-    ? Object.keys(clinicalData[0].clinicalData).sort((a, b) => {
+  // Use custom timeline order if provided, otherwise use default sorting
+  const labels = timelineOrder && timelineOrder.length > 0
+    ? timelineOrder.filter(timeline => allTimelines.includes(timeline))
+    : allTimelines.sort((a, b) => {
         if (a === 'baseline') return -1;
         if (b === 'baseline') return 1;
 
@@ -99,8 +67,41 @@ function DatabasePlot({ clinicalData }) {
         if (!aIsYear && bIsYear) return -1;
 
         return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-      })
-    : [];
+      });
+
+  // Rebuild datasets to ensure all use the same labels array
+  const alignedDatasets = clinicalData.map((patientData, index) => {
+    const patientID = patientData.id;
+
+    // Calculate baseline total score for percentage calculation
+    const baselineData = patientData.clinicalData['baseline']?.[scoretype];
+    const baselineScores = baselineData
+      ? Object.values(baselineData).filter(score => typeof score === 'number')
+      : [];
+    const baselineTotal = baselineScores.reduce((sum, score) => sum + score, 0) || 1;
+
+    // Map data points to the labels array, using null for missing timelines
+    const data = labels.map((timeline) => {
+      const timelineData = patientData.clinicalData[timeline]?.[scoretype];
+      if (!timelineData) {
+        return null;
+      }
+      const scores = Object.values(timelineData).filter(score => typeof score === 'number');
+      const totalScore = scores.reduce((sum, score) => sum + score, 0);
+      return showPercentage
+        ? ((baselineTotal - totalScore) / baselineTotal) * 100 // Calculate percentage improvement
+        : totalScore;
+    });
+
+    return {
+      label: `Patient ${patientID}`,
+      data,
+      fill: false,
+      borderColor: colorPalette[index % colorPalette.length], // Use colors from the palette
+      tension: 0.2,
+      spanGaps: false,
+    };
+  }).filter(dataset => dataset.data.some(value => value !== null && !Number.isNaN(value))); // Only include datasets with at least one valid data point
 
   const options = {
     responsive: true,
@@ -139,7 +140,7 @@ function DatabasePlot({ clinicalData }) {
 
   const data = {
     labels,
-    datasets,
+    datasets: alignedDatasets,
   };
 
   return (

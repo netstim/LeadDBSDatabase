@@ -14,8 +14,19 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  IconButton,
+  List,
+  ListItem,
+  ListItemText,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import ReorderIcon from '@mui/icons-material/Reorder';
 import * as XLSX from 'xlsx';
 import * as nifti from 'nifti-reader-js';
 import { Niivue, SLICE_TYPE } from '@niivue/niivue';
@@ -36,7 +47,7 @@ function DatabaseStats({ directoryPath }) {
   const { patients } = useContext(PatientContext);
   const [filteredPatients, setFilteredPatients] = useState(patients);
   const navigate = useNavigate();
-  const [analysisType, setAnalysisType] = useState('all');
+  const [analysisType, setAnalysisType] = useState('raincloud');
   const [clinicalTimelines, setClinicalTimelines] = useState(null);
   const [clinicalData, setClinicalData] = useState(null);
   const [clinicalDataForPlotting, setClinicalDataForPlotting] = useState(null);
@@ -48,57 +59,59 @@ function DatabaseStats({ directoryPath }) {
   const [filters, setFilters] = useState({});
   const [scoretype, setScoretype] = useState('UPDRS');
   const [scoreTypes, setScoreTypes] = useState(['UPDRS', 'Y-BOCS']); // Default score types
+  const [reorderDialogOpen, setReorderDialogOpen] = useState(false);
+  const [customTimelineOrder, setCustomTimelineOrder] = useState(null);
 
   console.log('Patients for real: ', patients);
-  // useEffect(() => {
-  //   if (directoryPath && filteredPatients.length > 0) {
-  //     const timelinePromises = filteredPatients.map((patient) =>
-  //       window.electron.ipcRenderer.invoke(
-  //         'get-timelines',
-  //         directoryPath,
-  //         patient.id,
-  //         true,
-  //       ),
-  //     );
-  //     Promise.all(timelinePromises)
-  //       .then((allReceivedTimelines) => {
-  //         const allFilteredTimelineNames = allReceivedTimelines.map(
-  //           (receivedTimelines) =>
-  //             receivedTimelines
-  //               .filter((timelineData) => timelineData.hasClinical)
-  //               .map((timelineData) => timelineData.timeline),
-  //         );
+  useEffect(() => {
+    if (directoryPath && filteredPatients.length > 0) {
+      const timelinePromises = filteredPatients.map((patient) =>
+        window.electron.ipcRenderer.invoke(
+          'get-timelines',
+          directoryPath,
+          patient.id,
+          true,
+        ),
+      );
+      Promise.all(timelinePromises)
+        .then((allReceivedTimelines) => {
+          const allFilteredTimelineNames = allReceivedTimelines.map(
+            (receivedTimelines) =>
+              receivedTimelines
+                .filter((timelineData) => timelineData.hasClinical)
+                .map((timelineData) => timelineData.timeline),
+          );
 
-  //         const patientsArray = filteredPatients;
-  //         const patientsWithTimelines = patientsArray.map((patient, index) => ({
-  //           id: patient.id,
-  //           timelines: allFilteredTimelineNames[index] || [],
-  //         }));
-  //         console.log(patientsWithTimelines);
-  //         return setClinicalTimelines(patientsWithTimelines);
-  //       })
-  //       .catch((error) => {
-  //         console.error('Error fetching timelines for all patients:', error);
-  //       });
-  //   }
-  // }, [directoryPath, filteredPatients]);
+          const patientsArray = filteredPatients;
+          const patientsWithTimelines = patientsArray.map((patient, index) => ({
+            id: patient.id,
+            timelines: allFilteredTimelineNames[index] || [],
+          }));
+          console.log(patientsWithTimelines);
+          return setClinicalTimelines(patientsWithTimelines);
+        })
+        .catch((error) => {
+          console.error('Error fetching timelines for all patients:', error);
+        });
+    }
+  }, [directoryPath, filteredPatients]);
 
-  // useEffect(() => {
-  //   if (clinicalTimelines) {
-  //     console.log('Clinical Timelines: ', clinicalTimelines);
-  //     window.electron.ipcRenderer
-  //       .invoke('get-clinical-data', directoryPath, clinicalTimelines)
-  //       .then((clinicalData) => {
-  //         setClinicalData(clinicalData);
-  //         setClinicalDataForPlotting(clinicalData);
-  //         // window.electron.ipcRenderer.sendMessage('download-clinical-data', clinicalData);
-  //         return clinicalData;
-  //       })
-  //       .catch((error) => {
-  //         console.error('Error retrieving clinical data:', error);
-  //       });
-  //   }
-  // }, [clinicalTimelines]);
+  useEffect(() => {
+    if (clinicalTimelines) {
+      console.log('Clinical Timelines: ', clinicalTimelines);
+      window.electron.ipcRenderer
+        .invoke('get-clinical-data', directoryPath, clinicalTimelines)
+        .then((clinicalData) => {
+          setClinicalData(clinicalData);
+          setClinicalDataForPlotting(clinicalData);
+          // window.electron.ipcRenderer.sendMessage('download-clinical-data', clinicalData);
+          return clinicalData;
+        })
+        .catch((error) => {
+          console.error('Error retrieving clinical data:', error);
+        });
+    }
+  }, [clinicalTimelines]);
 
   // useEffect(() => {
   //   window.electron.ipcRenderer
@@ -153,56 +166,6 @@ function DatabaseStats({ directoryPath }) {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Clinical Data');
     XLSX.writeFile(workbook, 'ClinicalData.xlsx');
-  };
-
-  const renderAnalysis = () => {
-    switch (analysisType) {
-      case 'raincloud':
-        return <DatabasePlot clinicalData={clinicalDataForPlotting} />;
-      case 'average':
-        return <GroupAveragePlot clinicalData={clinicalDataForPlotting} />;
-      case 'laterality':
-        return (
-          <GroupLateralityAnalysisPlot clinicalData={clinicalDataForPlotting} />
-        );
-      case 'subscore':
-        return (
-          <GroupSubscoreAnalysisPlot clinicalData={clinicalDataForPlotting} />
-        );
-      case 'all':
-        return (
-          <div className="analysis-container" style={{ height: '1000px' }}>
-            {/* <CombinedPlot
-              clinicalData={clinicalDataForPlotting}
-              scoretype={scoretype}
-            /> */}
-            <div style={{ scale: 2 }}>
-              {' '}
-              {/* Adjust width and height as needed */}
-              <Raincloud
-                clinicalData={clinicalDataForPlotting}
-                scoretype={scoretype}
-              />
-            </div>
-            {/* {scoretype === 'UPDRS' && (
-              <>
-                <GroupLateralityAnalysisPlot
-                  clinicalData={clinicalDataForPlotting}
-                  scoretype={scoretype}
-                />
-                <GroupSubscoreAnalysisPlot
-                  clinicalData={clinicalDataForPlotting}
-                  scoretype={scoretype}
-                />
-              </>
-            )} */}
-          </div>
-        );
-      case 'new':
-        return <CombinedPlot clinicalData={clinicalDataForPlotting} />;
-      default:
-        return <p>Please select an analysis type.</p>;
-    }
   };
 
   const handleAnalysisChange = (e) => {
@@ -558,6 +521,180 @@ function DatabaseStats({ directoryPath }) {
 
   const [showGroupViewer, setShowGroupViewer] = useState(false);
 
+  // Get all available timelines from clinical data
+  const getAllTimelines = () => {
+    if (!clinicalDataForPlotting || clinicalDataForPlotting.length === 0) {
+      return [];
+    }
+    const timelines = new Set();
+    clinicalDataForPlotting.forEach((patientData) => {
+      Object.keys(patientData.clinicalData).forEach((timeline) => {
+        if (patientData.clinicalData[timeline]?.[scoretype] !== undefined) {
+          timelines.add(timeline);
+        }
+      });
+    });
+    return Array.from(timelines);
+  };
+
+  // Get default sorted timelines
+  const getDefaultSortedTimelines = (timelines) => {
+    return [...timelines].sort((a, b) => {
+      if (a === 'baseline') return -1;
+      if (b === 'baseline') return 1;
+
+      const aIsDay = a.includes('day');
+      const bIsDay = b.includes('day');
+      const aIsMonth = a.includes('month');
+      const bIsMonth = b.includes('month');
+      const aIsYear = a.includes('year');
+      const bIsYear = b.includes('year');
+
+      if (aIsDay && !bIsDay) return -1;
+      if (!aIsDay && bIsDay) return 1;
+      if (aIsMonth && !bIsMonth) return -1;
+      if (!aIsMonth && bIsMonth) return 1;
+      if (aIsYear && !bIsYear) return 1;
+      if (!aIsYear && bIsYear) return -1;
+
+      return a.localeCompare(b, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    });
+  };
+
+  // Initialize timeline order when dialog opens
+  const handleOpenReorderDialog = () => {
+    const timelines = getAllTimelines();
+    if (timelines.length === 0) {
+      setReorderDialogOpen(true);
+      return;
+    }
+    const defaultOrder = getDefaultSortedTimelines(timelines);
+    // If custom order exists and has the same timelines, use it; otherwise use default
+    if (customTimelineOrder && customTimelineOrder.length > 0) {
+      // Check if custom order needs updating (new timelines added)
+      const customSet = new Set(customTimelineOrder);
+      const timelineSet = new Set(timelines);
+      const hasNewTimelines = timelines.some(t => !customSet.has(t));
+      if (!hasNewTimelines) {
+        setReorderDialogOpen(true);
+        return;
+      }
+    }
+    setCustomTimelineOrder(defaultOrder);
+    setReorderDialogOpen(true);
+  };
+
+  // Handle moving timeline up
+  const handleMoveUp = (index) => {
+    if (index === 0) return;
+    const newOrder = [...customTimelineOrder];
+    [newOrder[index - 1], newOrder[index]] = [newOrder[index], newOrder[index - 1]];
+    setCustomTimelineOrder(newOrder);
+  };
+
+  // Handle moving timeline down
+  const handleMoveDown = (index) => {
+    if (index === customTimelineOrder.length - 1) return;
+    const newOrder = [...customTimelineOrder];
+    [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1], newOrder[index]];
+    setCustomTimelineOrder(newOrder);
+  };
+
+  // Reset to default order
+  const handleResetOrder = () => {
+    const timelines = getAllTimelines();
+    const defaultOrder = getDefaultSortedTimelines(timelines);
+    setCustomTimelineOrder(defaultOrder);
+  };
+
+  // Get the timeline order to use (custom or default)
+  const getTimelineOrder = () => {
+    if (customTimelineOrder && customTimelineOrder.length > 0) {
+      return customTimelineOrder;
+    }
+    const timelines = getAllTimelines();
+    return getDefaultSortedTimelines(timelines);
+  };
+
+  const renderAnalysis = () => {
+    const timelineOrder = getTimelineOrder();
+    switch (analysisType) {
+      case 'raincloud':
+        return (
+          <DatabasePlot
+            clinicalData={clinicalDataForPlotting}
+            scoretype={scoretype}
+            timelineOrder={timelineOrder}
+          />
+        );
+      case 'average':
+        return (
+          <GroupAveragePlot
+            clinicalData={clinicalDataForPlotting}
+            scoretype={scoretype}
+            timelineOrder={timelineOrder}
+          />
+        );
+      case 'laterality':
+        return (
+          <GroupLateralityAnalysisPlot
+            clinicalData={clinicalDataForPlotting}
+            timelineOrder={timelineOrder}
+          />
+        );
+      case 'subscore':
+        return (
+          <GroupSubscoreAnalysisPlot
+            clinicalData={clinicalDataForPlotting}
+            timelineOrder={timelineOrder}
+          />
+        );
+      case 'all':
+        return (
+          <div className="analysis-container" style={{ height: '1000px' }}>
+            {/* <CombinedPlot
+              clinicalData={clinicalDataForPlotting}
+              scoretype={scoretype}
+            /> */}
+            <div style={{ scale: 2 }}>
+              {' '}
+              {/* Adjust width and height as needed */}
+              <Raincloud
+                clinicalData={clinicalDataForPlotting}
+                scoretype={scoretype}
+                timelineOrder={timelineOrder}
+              />
+            </div>
+            {/* {scoretype === 'UPDRS' && (
+              <>
+                <GroupLateralityAnalysisPlot
+                  clinicalData={clinicalDataForPlotting}
+                  scoretype={scoretype}
+                />
+                <GroupSubscoreAnalysisPlot
+                  clinicalData={clinicalDataForPlotting}
+                  scoretype={scoretype}
+                />
+              </>
+            )} */}
+          </div>
+        );
+      case 'new':
+        return (
+          <CombinedPlot
+            clinicalData={clinicalDataForPlotting}
+            scoretype={scoretype}
+            timelineOrder={timelineOrder}
+          />
+        );
+      default:
+        return <p>Please select an analysis type.</p>;
+    }
+  };
+
   return (
     <div className="database-stats-container">
       <HomeIcon onClick={() => navigate('/')} className="home-icon" />
@@ -643,7 +780,7 @@ function DatabaseStats({ directoryPath }) {
       </div>
       {clinicalDataForPlotting && filteredPatients && (
         <div className="analysis-section">
-          <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
             <Select
               value={scoretype}
               onChange={(e) => setScoretype(e.target.value)}
@@ -655,6 +792,14 @@ function DatabaseStats({ directoryPath }) {
                 </MenuItem>
               ))}
             </Select>
+            <Button
+              variant="outlined"
+              startIcon={<ReorderIcon />}
+              onClick={handleOpenReorderDialog}
+              size="small"
+            >
+              Reorder Timelines
+            </Button>
           </div>
           {/* <select
               value={analysisType}
@@ -737,6 +882,75 @@ function DatabaseStats({ directoryPath }) {
           directoryPath={directoryPath}
         />
       )} */}
+
+      {/* Reorder Timelines Dialog */}
+      <Dialog
+        open={reorderDialogOpen}
+        onClose={() => setReorderDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Reorder Timelines</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Drag timelines up or down to reorder them. The order will be applied to all plots.
+          </Typography>
+          {customTimelineOrder && customTimelineOrder.length > 0 ? (
+            <List>
+              {customTimelineOrder.map((timeline, index) => (
+                <ListItem
+                  key={timeline}
+                  sx={{
+                    border: '1px solid #e0e0e0',
+                    borderRadius: '4px',
+                    mb: 1,
+                    backgroundColor: '#fafafa',
+                  }}
+                  secondaryAction={
+                    <Box sx={{ display: 'flex', gap: 1 }}>
+                      <IconButton
+                        edge="end"
+                        onClick={() => handleMoveUp(index)}
+                        disabled={index === 0}
+                        size="small"
+                      >
+                        <ArrowUpwardIcon />
+                      </IconButton>
+                      <IconButton
+                        edge="end"
+                        onClick={() => handleMoveDown(index)}
+                        disabled={index === customTimelineOrder.length - 1}
+                        size="small"
+                      >
+                        <ArrowDownwardIcon />
+                      </IconButton>
+                    </Box>
+                  }
+                >
+                  <ListItemText
+                    primary={timeline}
+                    primaryTypographyProps={{
+                      fontWeight: index === 0 ? 'bold' : 'normal',
+                    }}
+                  />
+                </ListItem>
+              ))}
+            </List>
+          ) : (
+            <Typography>No timelines available</Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleResetOrder}>Reset to Default</Button>
+          <Button onClick={() => setReorderDialogOpen(false)}>Cancel</Button>
+          <Button
+            onClick={() => setReorderDialogOpen(false)}
+            variant="contained"
+          >
+            Apply
+          </Button>
+        </DialogActions>
+      </Dialog>
     </div>
   );
 }

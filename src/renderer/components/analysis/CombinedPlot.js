@@ -24,7 +24,7 @@ ChartJS.register(
   Filler,
 );
 
-function CombinedPlot({ clinicalData, scoretype }) {
+function CombinedPlot({ clinicalData, scoretype, timelineOrder }) {
   const [showPercentage, setShowPercentage] = useState(true);
   const [showGroupAverage, setShowGroupAverage] = useState(true);
   const [selectedTimelines, setSelectedTimelines] = useState(new Set());
@@ -63,29 +63,33 @@ function CombinedPlot({ clinicalData, scoretype }) {
   if (selectedTimelines.size === 0) {
     setSelectedTimelines(new Set(timelines));
   }
-  const orderedTimelines = timelines.sort((a, b) => {
-    if (a === 'baseline') return -1;
-    if (b === 'baseline') return 1;
 
-    const aIsDay = a.includes('day');
-    const bIsDay = b.includes('day');
-    const aIsMonth = a.includes('month');
-    const bIsMonth = b.includes('month');
-    const aIsYear = a.includes('year');
-    const bIsYear = b.includes('year');
+  // Use custom timeline order if provided, otherwise use default sorting
+  const orderedTimelines = timelineOrder && timelineOrder.length > 0
+    ? timelineOrder.filter(timeline => timelines.includes(timeline))
+    : timelines.sort((a, b) => {
+        if (a === 'baseline') return -1;
+        if (b === 'baseline') return 1;
 
-    if (aIsDay && !bIsDay) return -1;
-    if (!aIsDay && bIsDay) return 1;
-    if (aIsMonth && !bIsMonth) return -1;
-    if (!aIsMonth && bIsMonth) return 1;
-    if (aIsYear && !bIsYear) return 1;
-    if (!aIsYear && bIsYear) return -1;
+        const aIsDay = a.includes('day');
+        const bIsDay = b.includes('day');
+        const aIsMonth = a.includes('month');
+        const bIsMonth = b.includes('month');
+        const aIsYear = a.includes('year');
+        const bIsYear = b.includes('year');
 
-    return a.localeCompare(b, undefined, {
-      numeric: true,
-      sensitivity: 'base',
-    });
-  });
+        if (aIsDay && !bIsDay) return -1;
+        if (!aIsDay && bIsDay) return 1;
+        if (aIsMonth && !bIsMonth) return -1;
+        if (!aIsMonth && bIsMonth) return 1;
+        if (aIsYear && !bIsYear) return 1;
+        if (!aIsYear && bIsYear) return -1;
+
+        return a.localeCompare(b, undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        });
+      });
   console.log('Ordered timelines: ', orderedTimelines);
   // Filter orderedTimelines based on selectedTimelines
   const filteredTimelines = orderedTimelines.filter(timeline => selectedTimelines.has(timeline));

@@ -17,7 +17,7 @@ import {
 } from 'react-bootstrap';
 import SettingsIcon from '@mui/icons-material/Settings'; // Material UI settings icon
 import * as math from 'mathjs';
-import BigBrain from '../../assets/images/untitled.jpg';
+// import BigBrain from '../../assets/images/untitled.jpg';
 // import { remote } from 'electron'; // Use 'electron' for Electron v12+
 
 function GroupViewer({
@@ -762,20 +762,20 @@ function GroupViewer({
 
       // Load the image as a texture
       const textureLoader = new THREE.TextureLoader();
-      textureLoader.load(BigBrain, (texture) => {
-        // Create a plane geometry
-        const aspectRatio = texture.image.width / texture.image.height;
+      // textureLoader.load(BigBrain, (texture) => {
+      //   // Create a plane geometry
+      //   const aspectRatio = texture.image.width / texture.image.height;
 
-        // Create a plane geometry with the correct aspect ratio
-        const planeGeometry = new THREE.PlaneGeometry(256 * aspectRatio, 256);
+      //   // Create a plane geometry with the correct aspect ratio
+      //   const planeGeometry = new THREE.PlaneGeometry(256 * aspectRatio, 256);
 
-        const planeMaterial = new THREE.MeshBasicMaterial({ map: texture });
-        const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+      //   const planeMaterial = new THREE.MeshBasicMaterial({ map: texture });
+      //   const plane = new THREE.Mesh(planeGeometry, planeMaterial);
 
-        // Position the plane in the scene
-        plane.position.set(0, -15, -10); // Adjust position as needed
-        scene.add(plane);
-      });
+      //   // Position the plane in the scene
+      //   plane.position.set(0, -15, -10); // Adjust position as needed
+      //   scene.add(plane);
+      // });
 
       return () => {
         renderer.dispose();

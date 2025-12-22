@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import Plot from 'react-plotly.js';
 import { Select, MenuItem, Checkbox, ListItemText } from '@mui/material';
 
-function Raincloud({ clinicalData, scoretype }) {
+function Raincloud({ clinicalData, scoretype, timelineOrder }) {
   const [selectedTimelines, setSelectedTimelines] = useState(new Set());
 
   // Collect all timelines and sort with 'baseline' first
@@ -21,29 +21,32 @@ function Raincloud({ clinicalData, scoretype }) {
     setSelectedTimelines(new Set(timelines));
   }
 
-  const orderedTimelines = timelines.sort((a, b) => {
-    if (a === 'baseline') return -1;
-    if (b === 'baseline') return 1;
+  // Use custom timeline order if provided, otherwise use default sorting
+  const orderedTimelines = timelineOrder && timelineOrder.length > 0
+    ? timelineOrder.filter(timeline => timelines.includes(timeline))
+    : timelines.sort((a, b) => {
+        if (a === 'baseline') return -1;
+        if (b === 'baseline') return 1;
 
-    const aIsDay = a.includes('day');
-    const bIsDay = b.includes('day');
-    const aIsMonth = a.includes('month');
-    const bIsMonth = b.includes('month');
-    const aIsYear = a.includes('year');
-    const bIsYear = b.includes('year');
+        const aIsDay = a.includes('day');
+        const bIsDay = b.includes('day');
+        const aIsMonth = a.includes('month');
+        const bIsMonth = b.includes('month');
+        const aIsYear = a.includes('year');
+        const bIsYear = b.includes('year');
 
-    if (aIsDay && !bIsDay) return -1;
-    if (!aIsDay && bIsDay) return 1;
-    if (aIsMonth && !bIsMonth) return -1;
-    if (!aIsMonth && bIsMonth) return 1;
-    if (aIsYear && !bIsYear) return 1;
-    if (!aIsYear && bIsYear) return -1;
+        if (aIsDay && !bIsDay) return -1;
+        if (!aIsDay && bIsDay) return 1;
+        if (aIsMonth && !bIsMonth) return -1;
+        if (!aIsMonth && bIsMonth) return 1;
+        if (aIsYear && !bIsYear) return 1;
+        if (!aIsYear && bIsYear) return -1;
 
-    return a.localeCompare(b, undefined, {
-      numeric: true,
-      sensitivity: 'base',
-    });
-  });
+        return a.localeCompare(b, undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        });
+      });
 
   // Filter timelines to only include 'baseline' and 'postop'
   const filteredTimelines = orderedTimelines.filter(timeline =>

@@ -23,31 +23,43 @@ ChartJS.register(
   Filler
 );
 
-function GroupAveragePlot({ clinicalData }) {
+function GroupAveragePlot({ clinicalData, scoretype, timelineOrder }) {
   const [showPercentage, setShowPercentage] = useState(true);
 
-  // Collect all timelines and sort with 'baseline' first
-  const timelines = [...new Set(clinicalData.flatMap(patient => Object.keys(patient.clinicalData)))];
-  const orderedTimelines = timelines.sort((a, b) => {
-    if (a === 'baseline') return -1;
-    if (b === 'baseline') return 1;
+  // Collect all timelines that have data for the selected scoretype
+  const timelines = [
+    ...new Set(
+      clinicalData.flatMap((patient) =>
+        Object.keys(patient.clinicalData).filter(timeline =>
+          patient.clinicalData[timeline]?.[scoretype] !== undefined
+        )
+      )
+    )
+  ];
 
-    const aIsDay = a.includes('day');
-    const bIsDay = b.includes('day');
-    const aIsMonth = a.includes('month');
-    const bIsMonth = b.includes('month');
-    const aIsYear = a.includes('year');
-    const bIsYear = b.includes('year');
+  // Use custom timeline order if provided, otherwise use default sorting
+  const orderedTimelines = timelineOrder && timelineOrder.length > 0
+    ? timelineOrder.filter(timeline => timelines.includes(timeline))
+    : timelines.sort((a, b) => {
+        if (a === 'baseline') return -1;
+        if (b === 'baseline') return 1;
 
-    if (aIsDay && !bIsDay) return -1;
-    if (!aIsDay && bIsDay) return 1;
-    if (aIsMonth && !bIsMonth) return -1;
-    if (!aIsMonth && bIsMonth) return 1;
-    if (aIsYear && !bIsYear) return 1;
-    if (!aIsYear && bIsYear) return -1;
+        const aIsDay = a.includes('day');
+        const bIsDay = b.includes('day');
+        const aIsMonth = a.includes('month');
+        const bIsMonth = b.includes('month');
+        const aIsYear = a.includes('year');
+        const bIsYear = b.includes('year');
 
-    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-  });
+        if (aIsDay && !bIsDay) return -1;
+        if (!aIsDay && bIsDay) return 1;
+        if (aIsMonth && !bIsMonth) return -1;
+        if (!aIsMonth && bIsMonth) return 1;
+        if (aIsYear && !bIsYear) return 1;
+        if (!aIsYear && bIsYear) return -1;
+
+        return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+      });
 
   // Calculate average and standard deviation for each timeline
   const averages = [];
@@ -55,19 +67,26 @@ function GroupAveragePlot({ clinicalData }) {
 
   orderedTimelines.forEach(timeline => {
     const values = clinicalData.map(patientData => {
-      const baselineScores = Object.values(patientData.clinicalData['baseline'] || {});
+      const baselineData = patientData.clinicalData['baseline']?.[scoretype];
+      const baselineScores = baselineData
+        ? Object.values(baselineData).filter(score => typeof score === 'number')
+        : [];
       const baselineTotal = baselineScores.reduce((sum, score) => sum + score, 0) || 1;
 
-      const scores = Object.values(patientData.clinicalData[timeline] || {});
+      const timelineData = patientData.clinicalData[timeline]?.[scoretype];
+      if (!timelineData) {
+        return null;
+      }
+      const scores = Object.values(timelineData).filter(score => typeof score === 'number');
       const totalScore = scores.reduce((sum, score) => sum + score, 0);
       return showPercentage
         ? ((baselineTotal - totalScore) / baselineTotal) * 100 // Calculate percentage improvement
         : totalScore;
-    });
+    }).filter(value => value !== null && !Number.isNaN(value));
 
     // Calculate mean and standard deviation
     const mean = values.reduce((sum, val) => sum + val, 0) / values.length;
-    const stdDev = Math.sqrt(values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length);
+    const stdDev = Math.sqrt(values.reduce((sum, val) => sum + (val - mean) ** 2, 0) / values.length);
 
     averages.push(mean);
     stdDeviations.push(stdDev);

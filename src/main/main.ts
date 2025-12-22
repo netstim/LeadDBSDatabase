@@ -110,6 +110,7 @@ console.warn = () => {};
 console.error = () => {};
 
 const inputPath = process.argv[1];
+
 class AppUpdater {
   constructor() {
     // log.transports.file.level = 'info';
@@ -156,7 +157,7 @@ ipcMain.on('import-inputdata-file', async (event, arg) => {
     stimulationDirectory = stimulationData.stimDir;
     const leadDBS = true;
     // Writing stimulation parameters to files in clinical folder
-    if (stimulationData.type === 'leaddbs') {
+    if (stimulationData.type === 'leaddbs' || stimulationData.type === 'seeg') {
       stimulationData.labels.forEach((label, index) => {
         // let patientDir = path.join(stimulationData.filepath, `sub-${stimulationData.patientname}`);
         const patientDir = getPatientFolder(
