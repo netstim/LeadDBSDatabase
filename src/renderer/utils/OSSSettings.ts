@@ -44,7 +44,7 @@ export const defaultOSSSettings: OSSSettings = {
   anisotropyModel: 'Isotropic',
 
   // Pathway Activation Defaults
-  connectomeType: 'Multi-Tract: Sahin_C...',
+  connectomeType: 'Multi-Tract...',
   cableModel: 'McNeal1976',
   axonDiameter: 3.0,
   axonDiameterUnit: 'µm',

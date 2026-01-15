@@ -4095,7 +4095,7 @@ function Electrode({
           </div>
         )}
       </div>
-      <OSSSettingsModal
+      {/* <OSSSettingsModal
         show={showOSSSettingsModal}
         onHide={() => setShowOSSSettingsModal(false)}
         settings={ossSettings}
@@ -4103,7 +4103,7 @@ function Electrode({
           setOssSettings(settings);
           console.log('OSS Settings saved:', settings);
         }}
-      />
+      /> */}
     </div>
   );
 }
