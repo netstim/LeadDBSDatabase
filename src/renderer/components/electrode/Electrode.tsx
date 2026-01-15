@@ -16,12 +16,14 @@ import Tooltip from 'react-bootstrap/Tooltip';
 import { Tooltip as MuiTooltip } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import IconButton from '@mui/material/IconButton';
+import { Modal } from 'react-bootstrap';
 
 // Styles
 import '../../styles/electrode/Styling.css';
 
 // Utilities
 import * as math from 'mathjs';
+import { OSSSettings, defaultOSSSettings } from '../../utils/OSSSettings';
 
 // SVG Icons
 import { ReactComponent as IPG1 } from '../../assets/electrode-images/IPG.svg';
@@ -40,6 +42,7 @@ import { ReactComponent as Background } from '../../assets/images/NewUI/Backgrou
 // Components
 import PlyViewer from '../viewers/PlyViewer';
 import ContactParameters from './ContactParameters';
+import OSSSettingsModal from './OSSSettingsModal';
 
 // Type definitions
 interface ElectrodeProps {
@@ -522,6 +525,8 @@ function Electrode({
 
   const [researchToggle, setResearchToggle] = useState('left');
   const [lastChangedKey, setLastChangedKey] = useState(null);
+  const [ossSettings, setOssSettings] = useState<OSSSettings>(defaultOSSSettings);
+  const [showOSSSettingsModal, setShowOSSSettingsModal] = useState(false);
   const initialSelectedValues = { 0: 'right' };
   const initialQuantityBoston = { 0: 100 };
   const initialQuantity = { 0: 0 };
@@ -3468,6 +3473,25 @@ function Electrode({
               />
             )}
           </div>
+          {visModel === '6' && (
+            <div style={{ marginTop: '10px', marginBottom: '10px' }}>
+              <Button
+                variant="outline-primary"
+                onClick={() => setShowOSSSettingsModal(true)}
+                style={{
+                  borderRadius: '10px',
+                  backgroundColor: 'white',
+                  color: 'navy',
+                  fontWeight: 'bold',
+                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.2)',
+                  border: '1px solid #ccc',
+                  width: '100%',
+                }}
+              >
+                OSS-DBS Settings
+              </Button>
+            </div>
+          )}
           <div className="toggle-controls">
             <div className="input-field" style={{ fontSize: '18px' }}>
               <input
@@ -3570,7 +3594,7 @@ function Electrode({
                 name="quantity"
                 pattern="[0-9]+"
                 value={60}
-                disabled
+                disabled={visModel !== "6"}
                 onChange={handleParameterChange('parameter1')}
               />
               <span className="input-label">μs</span>
@@ -4071,6 +4095,15 @@ function Electrode({
           </div>
         )}
       </div>
+      <OSSSettingsModal
+        show={showOSSSettingsModal}
+        onHide={() => setShowOSSSettingsModal(false)}
+        settings={ossSettings}
+        onSave={(settings) => {
+          setOssSettings(settings);
+          console.log('OSS Settings saved:', settings);
+        }}
+      />
     </div>
   );
 }

@@ -839,7 +839,7 @@ function Programmer() {
       // return '';
     });
     // console.log(updatedQuantities);
-    return outputQuantities;
+  return outputQuantities;
   };
 
   const translatePolarity = (sideValue) => {
