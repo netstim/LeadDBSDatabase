@@ -3618,7 +3618,9 @@ function Electrode({
               textAlign: 'left',
               zIndex: 100,
               marginTop: '-10px',
-              marginBottom: '-50px',
+              ...(IPG === 'Research' || IPG === 'Abbott'
+                ? { marginBottom: '10px' }
+                : { marginBottom: '-50px' }),
             }}
           >
             <ButtonGroup horizontal>
@@ -3827,7 +3829,7 @@ function Electrode({
               boxShadow: '0 4px 8px rgba(0, 0, 0, 0.4)',
               border: 'none',
               outline: 'none',
-              marginTop: '-60px',
+              marginTop: IPG === 'Research' || IPG === 'Abbott' ? '60px' : '-60px',
             }}
           >
             {showViewer ? 'Close Viewer' : 'Open Viewer'}

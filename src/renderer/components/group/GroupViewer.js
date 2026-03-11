@@ -2,9 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
 import * as THREE from 'three';
 import { PLYLoader, OrbitControls } from 'three-stdlib';
-// import * as nifti from 'nifti-reader-js'; // Correctly importing the nifti module
 import * as nifti from 'nifti-reader-js';
-// import './electrode_models/currentModels/ElecModelStyling/boston_vercise_directed.css';
 import {
   Tabs,
   Tab,

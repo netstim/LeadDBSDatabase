@@ -109,8 +109,6 @@ console.log = () => {};
 console.warn = () => {};
 console.error = () => {};
 
-const inputPath = process.argv[1];
-
 class AppUpdater {
   constructor() {
     // log.transports.file.level = 'info';
@@ -1208,14 +1206,13 @@ const createWindow = async () => {
       leadPath = stimulationData.leadpath;
     }
 
-    // const leadPath = '/Users/savirmadan/Documents/GitHub/leaddbs';
     // Step 3: Go to the 'atlases' folder within the Lead_Path
     const atlasesPath = path.join(
       leadPath,
       'templates',
       'space',
-      // 'MNI152NLin2009bAsym',
-      'MNI_ICBM_2009b_NLIN_ASYM',
+      'MNI152NLin2009bAsym',
+      // 'MNI_ICBM_2009b_NLIN_ASYM',
       'atlases',
     );
 
@@ -1373,8 +1370,6 @@ const createWindow = async () => {
   // ipcMain.handle('load-nii-file', async (event, historical) => {
   //   const { patient, timeline, directoryPath, leadDBS } = historical;
   //   if (leadDBS) {
-  //     // const filePath = '/Users/savirmadan/Downloads/Cognitive Decline Network.nii';
-  //     const filePath = '/Users/savirmadan/Downloads/r0maps_stn129/rmap_updrstotal.nii';
   //     const fileData = fs.readFileSync(filePath);
   //     return fileData.buffer;
   //   }
@@ -1388,9 +1383,6 @@ const createWindow = async () => {
   // ipcMain.handle('load-csv-file', async (event, historical) => {
   //   const { patient, timeline, directoryPath, leadDBS } = historical;
   //   if (leadDBS) {
-  //     // const filePath = '/Users/savirmadan/Downloads/Cognitive Decline Network.nii';
-  //     const filePath = '/Users/savirmadan/Downloads/rmap_tremor.csv';
-  //     // const filePath = '/Users/savirmadan/Downloads/r0maps_stn129/rmap_tremor.nii';
   //     const fileData = fs.readFileSync(filePath, 'utf8'); // Read the PLY file as binary
   //     return fileData; // Return as ArrayBuffer // send the file contents back to renderer process
   //   }
@@ -1402,10 +1394,7 @@ const createWindow = async () => {
   // });
 
   ipcMain.handle('load-test-file', async (event, historical) => {
-    // const filePath = '/Users/savirmadan/Documents/GitHub/leaddbs/templates/space/MNI152NLin2009bAsym/t1.nii';
     const filePath = '/Volumes/PdBwh/CompleteParkinsons/derivatives/leaddbs/sub-CBCTDBS0220/stimulations/MNI152NLin2009bAsym/20250513194638/sub-CBCTDBS0220_sim-binary_model-ossdbs_hemi-R.nii';
-    // const filePath = '/Users/savirmadan/Documents/GitHub/leaddbs/templates/space/MNI152NLin2009bAsym/t1_resampled.nii';
-    // const filePath = '/Users/savirmadan/Documents/GitHub/leaddbs/templates/space/MNI152NLin2009bAsym/atlases/STN Sweetspots (Dembek 2019)/lh/Rigidity_Clinical_MeanMapGradient.nii';
     console.log(filePath);
     const fileData = fs.readFileSync(filePath); // Read the PLY file as binary
     return fileData.buffer; // Return as ArrayBuffer // send the file contents back to renderer process

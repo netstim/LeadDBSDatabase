@@ -758,8 +758,19 @@ export default function registerFileHandlers() {
 
   ipcMain.on('save-file-seeg', async (event, data) => {
     console.log('data: ', data);
-    const filePath = path.join(data.directoryPath, 'derivatives', 'leaddbs', data.selectedPatientId, 'stimulations', `${data.selectedPatientId}_stimparameters.tsv`);
-    const csvFilePath = path.join(data.directoryPath, 'derivatives', 'leaddbs', data.selectedPatientId, 'stimulations', `${data.selectedPatientId}_stimparameters.csv`);
+    const stimDir = path.join(
+      data.directoryPath,
+      'derivatives',
+      'leaddbs',
+      data.selectedPatientId,
+      'stimulations'
+    );
+    // Make directory if needed
+    if (!fs.existsSync(stimDir)) {
+      fs.mkdirSync(stimDir, { recursive: true });
+    }
+    const filePath = path.join(stimDir, `${data.selectedPatientId}_stimparameters.tsv`);
+    const csvFilePath = path.join(stimDir, `${data.selectedPatientId}_stimparameters.csv`);
     fs.writeFileSync(filePath, data.TSV);
     fs.writeFileSync(csvFilePath, data.CSV);
   });
