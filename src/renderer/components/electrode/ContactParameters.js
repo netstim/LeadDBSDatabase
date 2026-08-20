@@ -38,9 +38,9 @@ const StyledTextField = styled(TextField)(({ theme }) => ({
   '& .MuiOutlinedInput-root': {
     // borderRadius: '2px',
     width: '100px',
-    fontSize: '16px',
-    fontWeight: '200',
-    paddingLeft: '12px',
+    fontSize: '32px',
+    fontWeight: '600',
+    paddingLeft: '10px',
     textAlign: 'center',
     color: 'white',
     '& fieldset': {
@@ -128,7 +128,7 @@ function ContactParameters({
         style={{
           display: 'flex',
           justifyContent: 'center',
-          marginTop: '-30px',
+          marginTop: '-40px',
           marginLeft: '40px',
         }}
       >

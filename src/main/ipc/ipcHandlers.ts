@@ -8,6 +8,11 @@ const { execSync } = require('child_process');
 
 const fs = require('fs');
 
+interface DirectoryEntry {
+  name: string;
+  isFile: () => boolean;
+}
+
 export default function registerFileHandlers() {
   ipcMain.on('ipc-example', async (_event, arg) => {
     console.log('ipc-example');
@@ -756,6 +761,39 @@ export default function registerFileHandlers() {
     return data;
   });
 
+  ipcMain.handle(
+    'load_seeg_stimulations',
+    async (event, directoryPath, selectedPatientId) => {
+      const stimDir = path.join(
+        directoryPath,
+        'derivatives',
+        'leaddbs',
+        selectedPatientId,
+        'stimulations',
+      );
+
+      if (!fs.existsSync(stimDir)) return [];
+
+      const prefix = `${selectedPatientId}_stimparameters_`;
+      const suffix = '.csv';
+      return fs
+        .readdirSync(stimDir, { withFileTypes: true })
+        .filter(
+          (entry: DirectoryEntry) =>
+            entry.isFile() &&
+            entry.name.startsWith(prefix) &&
+            entry.name.endsWith(suffix),
+        )
+        .sort((first: DirectoryEntry, second: DirectoryEntry) =>
+          first.name.localeCompare(second.name),
+        )
+        .map((entry: DirectoryEntry) => ({
+          electrodeName: entry.name.slice(prefix.length, -suffix.length),
+          CSV: fs.readFileSync(path.join(stimDir, entry.name), 'utf8'),
+        }));
+    },
+  );
+
   ipcMain.on('save-file-seeg', async (event, data) => {
     console.log('data: ', data);
     const stimDir = path.join(
@@ -763,16 +801,37 @@ export default function registerFileHandlers() {
       'derivatives',
       'leaddbs',
       data.selectedPatientId,
-      'stimulations'
+      'stimulations',
     );
     // Make directory if needed
     if (!fs.existsSync(stimDir)) {
       fs.mkdirSync(stimDir, { recursive: true });
     }
     const filePath = path.join(stimDir, `${data.selectedPatientId}_stimparameters.tsv`);
-    const csvFilePath = path.join(stimDir, `${data.selectedPatientId}_stimparameters.csv`);
     fs.writeFileSync(filePath, data.TSV);
-    fs.writeFileSync(csvFilePath, data.CSV);
+
+    data.electrodeCSVs.forEach(
+      (electrodeCSV: { electrodeName: string; CSV: string }) => {
+        const { electrodeName, CSV } = electrodeCSV;
+        // Keep the electrode name in the filename while preventing path traversal
+        // or characters that are invalid on supported operating systems.
+        const safeElectrodeName = electrodeName
+          .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+          .trim();
+
+        if (!safeElectrodeName) {
+          throw new Error(
+            'Cannot save an sEEG configuration without an electrode name',
+          );
+        }
+
+        const csvFilePath = path.join(
+          stimDir,
+          `${data.selectedPatientId}_stimparameters_${safeElectrodeName}.csv`,
+        );
+        fs.writeFileSync(csvFilePath, CSV);
+      },
+    );
   });
 
   // Template download handlers

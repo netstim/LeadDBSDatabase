@@ -21,6 +21,11 @@ import { makeStyles } from '@mui/styles';
 import { PatientContext } from '../contexts/PatientContext';
 import { useLocation, useNavigate } from 'react-router-dom';
 import path from 'path';
+import {
+  createEmptyElectrodeSet,
+  ElectrodeSet,
+  parseElectrodeCSV,
+} from '../utils/seegCsv';
 
 interface Patient {
   id: string;
@@ -81,6 +86,11 @@ interface ReconstructionData {
   [key: string]: any;
 }
 
+interface SavedElectrodeCSV {
+  electrodeName: string;
+  CSV: string;
+}
+
 // Define styles for the grid and checkbox
 const useStyles = makeStyles({
   gridContainer: {
@@ -110,6 +120,9 @@ function SEEG({ directoryPath }) {
   const [data, setData] = useState<ReconstructionData | null>(null);
   const [patientList, setPatientList] = useState<any[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState<string>('');
+  const [savedElectrodeCSVs, setSavedElectrodeCSVs] = useState<
+    SavedElectrodeCSV[]
+  >([]);
 
   useEffect(() => {
     const loadPatients = async () => {
@@ -124,19 +137,37 @@ function SEEG({ directoryPath }) {
   }, [directoryPath]);
 
   useEffect(() => {
-    console.log('Selected Patient ID: ', selectedPatientId);
+    let cancelled = false;
+
     const loadData = async () => {
-      const reconstructionData = await window.electron.ipcRenderer.invoke(
-        'load_seeg_reco',
-        directoryPath,
-        selectedPatientId,
-      );
-      console.log('Data: ', reconstructionData);
-      setData(reconstructionData.reco);
+      const [reconstructionData, stimulationFiles] = await Promise.all([
+        window.electron.ipcRenderer.invoke(
+          'load_seeg_reco',
+          directoryPath,
+          selectedPatientId,
+        ),
+        window.electron.ipcRenderer.invoke(
+          'load_seeg_stimulations',
+          directoryPath,
+          selectedPatientId,
+        ),
+      ]);
+
+      if (!cancelled) {
+        setData((reconstructionData as { reco: ReconstructionData }).reco);
+        setSavedElectrodeCSVs(stimulationFiles as SavedElectrodeCSV[]);
+      }
     };
+
     if (selectedPatientId) {
+      setData(null);
+      setSavedElectrodeCSVs([]);
       loadData();
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedPatientId, directoryPath]);
 
   const classes = useStyles();
@@ -159,7 +190,10 @@ function SEEG({ directoryPath }) {
 
   // Initialize selectedElectrode when data loads
   useEffect(() => {
-    if (electrodeNames.length > 0 && !selectedElectrode) {
+    if (
+      electrodeNames.length > 0 &&
+      !electrodeNames.includes(selectedElectrode)
+    ) {
       setSelectedElectrode(electrodeNames[0]);
     }
   }, [electrodeNames, selectedElectrode]);
@@ -224,28 +258,32 @@ function SEEG({ directoryPath }) {
   ]); // Example variable names
 
   // Initialize electrodeSets only when electrodeNames are available
-  const [electrodeSets, setElectrodeSets] = useState<Record<string, any[]>>({});
+  const [electrodeSets, setElectrodeSets] = useState<
+    Record<string, ElectrodeSet[]>
+  >({});
 
-  // Initialize electrodeSets when data loads
+  // Initialize each electrode from its saved CSV, or use a blank set if no
+  // saved stimulation file exists.
   useEffect(() => {
-    if (electrodeNames.length > 0 && Object.keys(electrodeSets).length === 0) {
-      const initialSets = electrodeNames.reduce((acc, electrode) => {
-        acc[electrode] = [
-          {
-            contacts: [],
-            contactStates: {},
-            amplitude: '',
-            amplitudeUnit: 'mA',
-            pulseWidth: '',
-            variableValues: {}, // Store values for each variable name
-          },
-        ];
-        return acc;
-      }, {} as Record<string, any[]>);
-      setElectrodeSets(initialSets);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [electrodeNames]);
+    if (!data?.props) return;
+
+    const savedByElectrode = new Map(
+      savedElectrodeCSVs.map((savedFile) => [
+        savedFile.electrodeName,
+        savedFile.CSV,
+      ]),
+    );
+    const initialSets = data.props.reduce((acc, electrode) => {
+      const labels = electrode.labels?.[0] || [];
+      const savedCSV = savedByElectrode.get(electrode.elname);
+      acc[electrode.elname] = savedCSV
+        ? parseElectrodeCSV(savedCSV, labels)
+        : [createEmptyElectrodeSet()];
+      return acc;
+    }, {} as Record<string, ElectrodeSet[]>);
+
+    setElectrodeSets(initialSets);
+  }, [data, savedElectrodeCSVs]);
 
   const handleElectrodeChange = (event) => {
     setSelectedElectrode(event.target.value);
@@ -456,35 +494,33 @@ function SEEG({ directoryPath }) {
   const saveElectrodeConfigToCSV = () => {
     if (!data?.props) return;
 
-    const csvData = [];
+    const electrodeCSVs = data.props.map((electrode) => {
+      const labels = electrode.labels?.[0] || [];
+      const csvData = [labels];
 
-    // Header row: contact labels of the selected electrode
-    const labels = data.props.find((item) => item.elname === selectedElectrode)?.labels?.[0] || [];
-    csvData.push(labels);
-    console.log("Selected Electrode:", selectedElectrode);
-    console.log("Contact Labels:", labels);
-    console.log("Initial csvData (header only):", csvData);
-
-    // Build one row per set
-    const sets = electrodeSets[selectedElectrode] || [];
-    sets.forEach((set, idx) => {
-      const amp = set.amplitude ?? "";
-      const row = labels.map((label) => {
-        const pol = set.contactStates?.[label];
-        if (pol === "plus")  return `+${amp}`;
-        if (pol === "minus") return `-${amp}`;
-        return "None";
+      // Build one row per stimulation set for this electrode.
+      const sets = electrodeSets[electrode.elname] || [];
+      sets.forEach((set) => {
+        const amp = set.amplitude ?? '';
+        const row = labels.map((label) => {
+          const polarity = set.contactStates?.[label];
+          if (polarity === 'plus') return `+${amp}`;
+          if (polarity === 'minus') return `-${amp}`;
+          return 'None';
+        });
+        csvData.push(row);
       });
-      csvData.push(row);
+
+      return {
+        electrodeName: electrode.elname,
+        CSV: csvData.map((row) => row.join(',')).join('\n'),
+      };
     });
+
     const tsvString = saveTSV();
-    // Convert CSV array to string format
-    const csvString = csvData.map(row => row.join(',')).join('\n');
-    // console.log("tsvString: ", tsvString);
-    console.log("csvData: ", csvData);
     window.electron.ipcRenderer.sendMessage('save-file-seeg', {
       TSV: tsvString,
-      CSV: csvString,
+      electrodeCSVs,
       directoryPath: directoryPath,
       selectedPatientId: selectedPatientId,
     });
@@ -618,13 +654,7 @@ function SEEG({ directoryPath }) {
                     value={set.contacts}
                     renderValue={(selected) => {
                       if (selected.length === 0) return 'No contacts selected';
-                      return selected
-                        .map((item) =>
-                          typeof item === "string"
-                            ? item
-                            : item.contact
-                        )
-                        .join(", ");
+                      return selected.join(', ');
                     }}
                     MenuProps={{
                       PaperProps: {
@@ -734,7 +764,7 @@ function SEEG({ directoryPath }) {
           size="large"
           onClick={saveElectrodeConfigToCSV}
         >
-          Save Electrode Configuration
+          Save All Electrode Configurations
         </Button>
       </Box>
     </Box>

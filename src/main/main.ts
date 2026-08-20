@@ -133,7 +133,7 @@ ipcMain.on('import-inputdata-file', async (event, arg) => {
 
   try {
     console.log(inputPath);
-    console.log(process.argv[1]);
+    // console.log(process.argv[1]);
     const stats = fs.statSync(inputPath);
     if (stats.isDirectory()) {
       stimulationData.mode = 'standalone';

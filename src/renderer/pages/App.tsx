@@ -257,7 +257,7 @@ export default function App() {
               path="/seeg"
               element={
                 <div>
-                  <Navbar text="Lead-SEEG" color1="#375D7A" />
+                  <Navbar text="" color1="#375D7A" />
                   <div>
                     <div style={{ marginTop: '100px' }}>
                       <SEEG directoryPath={directoryPath} />
