@@ -23,7 +23,19 @@ import '../../styles/electrode/Styling.css';
 
 // Utilities
 import * as math from 'mathjs';
-import { OSSSettings, defaultOSSSettings } from '../../utils/OSSSettings';
+import { OSSSettings } from '../../utils/OSSSettings';
+import {
+  balanceSteering,
+  changeContactPolarity,
+  changeContactQuantity,
+  changeSteeringAmplitude,
+  changeSteeringUnit,
+  getSteeringUnit,
+} from '../../utils/currentSteering';
+import type { SteeringState, SteeringUnit } from '../../utils/currentSteering';
+import { steerDirectional } from '../../utils/directionalSteering';
+import type { DirectionalAction } from '../../utils/directionalSteering';
+import { normalizeViewerProgram } from '../../utils/viewerProgram';
 
 // SVG Icons
 import { ReactComponent as IPG1 } from '../../assets/electrode-images/IPG.svg';
@@ -56,7 +68,7 @@ interface ElectrodeProps {
   totalAmplitude: number;
   setTotalAmplitude: (value: number) => void;
   parameters: Record<string, any>;
-  setParameters: (value: Record<string, any>) => void;
+  setParameters: React.Dispatch<React.SetStateAction<Record<string, any>>>;
   visModel: string;
   setVisModel: (value: string) => void;
   sessionTitle: string;
@@ -75,6 +87,8 @@ interface ElectrodeProps {
   setTemplateSpace: (value: number) => void;
   showViewer: boolean;
   setShowViewer: (value: boolean) => void;
+  ossSettings: OSSSettings;
+  setOSSSettings: (value: OSSSettings) => void;
 }
 
 function Electrode({
@@ -107,6 +121,8 @@ function Electrode({
   setTemplateSpace,
   showViewer,
   setShowViewer,
+  ossSettings,
+  setOSSSettings,
 }: ElectrodeProps) {
   // const { elspec } = props;
   console.log('IPG: ', IPG);
@@ -141,23 +157,53 @@ function Electrode({
     window.electron.zoom.setZoomLevel(-3);
   }, []);
 
+  const steeringUnit = getSteeringUnit(
+    IPG,
+    percAmpToggle,
+    volAmpToggle,
+    togglePosition,
+  );
+  const currentLabel = steeringUnit === 'V' ? 'V' : 'mA';
+  const steeringContext = {
+    ipg: IPG,
+    unit: steeringUnit,
+    totalAmplitude,
+  };
+  const steeringState = { quantities, selectedValues };
+  const [steeringNotice, setSteeringNotice] = useState('');
+  const [amplitudeDraft, setAmplitudeDraft] = useState(
+    String(totalAmplitude ?? 0),
+  );
+  const [isEditingAmplitude, setIsEditingAmplitude] = useState(false);
+
   useEffect(() => {
-    let newTogglePosition = 'mA';
-    if (IPG === 'Boston') {
-      if (percAmpToggle === 'left') {
-        newTogglePosition = '%';
-      } else {
-        newTogglePosition = 'mA';
-      }
-    } else if (IPG === 'Medtronic_Activa') {
-      if (volAmpToggle === 'right') {
-        newTogglePosition = 'V';
-      } else {
-        newTogglePosition = 'mA';
-      }
+    if (!isEditingAmplitude) {
+      setAmplitudeDraft(String(totalAmplitude ?? 0));
     }
-    setTogglePosition(newTogglePosition);
-  }, []);
+  }, [totalAmplitude, isEditingAmplitude]);
+
+  const applySteeringState = (nextState: SteeringState) => {
+    setSelectedValues(nextState.selectedValues);
+    setQuantities(nextState.quantities);
+  };
+
+  const applyViewerProgram = (
+    nextQuantities: Record<string, number>,
+    nextSelectedValues: Record<string, string>,
+    nextAmplitude: number,
+  ) => {
+    const nextProgram = normalizeViewerProgram(
+      {
+        quantities: nextQuantities,
+        selectedValues: nextSelectedValues,
+        amplitude: nextAmplitude,
+      },
+      steeringContext,
+    );
+    applySteeringState(nextProgram);
+    setTotalAmplitude(nextProgram.amplitude);
+    setSteeringNotice('');
+  };
 
   const parseEtageidx = (etageidx) => {
     return etageidx.map((levelStr) => {
@@ -223,6 +269,29 @@ function Electrode({
       });
     }
   });
+
+  const applyDirectionalSteering = (action: DirectionalAction) => {
+    const result = steerDirectional(
+      steeringState,
+      steeringContext,
+      parsedEtageidx,
+      action,
+    );
+    if (!result.changed) {
+      setSteeringNotice(result.reason || 'The allocation is already there.');
+      return;
+    }
+    applySteeringState(result);
+    setSteeringNotice('');
+  };
+
+  const handleDirectionalKeyDown =
+    (action: DirectionalAction) => (event: React.KeyboardEvent<SVGElement>) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        applyDirectionalSteering(action);
+      }
+    };
   console.log('New Level Array: ', newLevelArray);
   // const determineFace = (contactNum) => {
   //   Object.keys(newFace).forEach((key) => {
@@ -523,10 +592,12 @@ function Electrode({
     setNames(newNames);
   }, [contactNaming]);
 
-  const [researchToggle, setResearchToggle] = useState('left');
+  let researchToggle = 'center';
+  if (steeringUnit === '%') researchToggle = 'left';
+  if (steeringUnit === 'V') researchToggle = 'right';
   const [lastChangedKey, setLastChangedKey] = useState(null);
-  const [ossSettings, setOssSettings] = useState<OSSSettings>(defaultOSSSettings);
   const [showOSSSettingsModal, setShowOSSSettingsModal] = useState(false);
+  const [ossSettingsStatus, setOSSSettingsStatus] = useState('');
   const initialSelectedValues = { 0: 'right' };
   const initialQuantityBoston = { 0: 100 };
   const initialQuantity = { 0: 0 };
@@ -565,185 +636,23 @@ function Electrode({
   };
 
   const calculateQuantitiesWithDistribution = () => {
-    // Calculate the quantity increment for 'center' and 'right' values
-    console.log('PROPS: ', name);
-    let total = 0;
-    if (percAmpToggle === 'left') {
-      total = 100;
-    } else if (percAmpToggle === 'center') {
-      total = totalAmplitude;
-      // console.log('Total: ', totalAmplitude);
-    }
-
-    // total = totalAmplitude;
-    console.log('percAmpToggle: ', percAmpToggle);
-    console.log('total: ', total);
-    const centerCount = Object.values(selectedValues).filter(
-      (value) => value === 'center',
-    ).length;
-    const centerQuantityIncrement = centerCount > 0 ? total / centerCount : 0;
-    // console.log('CenterCount: ', centerCount);
-
-    const rightCount = Object.values(selectedValues).filter(
-      (value) => value === 'right',
-    ).length;
-    const rightQuantityIncrement = rightCount > 0 ? total / rightCount : 0;
-
-    const updatedQuantities = { ...quantities }; // Create a copy of the quantities object
-
-    // Update the quantities based on selected values
-    Object.keys(selectedValues).forEach((key) => {
-      const value = selectedValues[key];
-      // console.log("key="+key + ", value=" + value);
-      if (value === 'left') {
-        updatedQuantities[key] = 0;
-      } else if (value === 'center') {
-        console.log('CENTER: ', centerQuantityIncrement);
-        updatedQuantities[key] = centerQuantityIncrement;
-        console.log('updated: ', updatedQuantities);
-      } else if (value === 'right') {
-        updatedQuantities[key] = rightQuantityIncrement;
-      }
-      // updatedQuantities[key] = 20;
-    });
-
-    // console.log(quantities);
-    setQuantities(updatedQuantities);
-    // setSelectedValues(selectedValue);
-
-    console.log(quantities);
-    // Update the state with the new quantities
+    applySteeringState(
+      balanceSteering(steeringState, steeringContext, 'equal'),
+    );
+    setSteeringNotice('');
   };
 
   const handleTripleToggleChange = (value, key) => {
-    const updatedSelectedValues = { ...selectedValues, [key]: value };
-    // const updatedAnimationValues = { ...animation, [key]: anime };
-    const updatedQuantities = { ...quantities };
-    setSelectedValues(updatedSelectedValues);
-    // setAnimation(updatedAnimationValues);
-    // console.log(animation);
-    // if (IPG === 'Abbott') {
-    //   Object.keys(updatedSelectedValues).forEach((thing) => {
-    //     const newvalue = updatedSelectedValues[thing];
-    //     if (newvalue === 'left') {
-    //       updatedQuantities[thing] = 0;
-    //     } else if (newvalue === 'center') {
-    //       updatedQuantities[thing] = updatedQuantities[thing];
-    //     } else if (newvalue === 'right') {
-    //       updatedQuantities[thing] = updatedQuantities[thing];
-    //     }
-    //   });
-    // }
-    setQuantities(updatedQuantities);
+    applySteeringState(
+      changeContactPolarity(steeringState, steeringContext, String(key), value),
+    );
     setLastChangedKey(key);
+    setSteeringNotice('');
   };
 
   const roundToHundred = () => {
-    // Initialize sum variables
-    let totalCenterSum = 0;
-    let totalRightSum = 0;
-    const roundUpdatedQuantities = { ...quantities };
-
-    let total = 0;
-    if (percAmpToggle === 'left') {
-      total = 100;
-    } else {
-      total = totalAmplitude;
-    }
-
-    // Calculate the sums for 'center' and 'right' values
-    Object.keys(selectedValues).forEach((key) => {
-      const value = selectedValues[key];
-      if (value === 'center') {
-        totalCenterSum += parseFloat(roundUpdatedQuantities[key]);
-        console.log('CenterSum: ', totalCenterSum);
-      } else if (value === 'right') {
-        totalRightSum += parseFloat(roundUpdatedQuantities[key]);
-        console.log('RightSum: ', totalRightSum);
-      }
-    });
-
-    // Calculate the quantity increments
-    const centerCount = Object.values(selectedValues).filter(
-      (value) => value === 'center',
-    ).length;
-    const centerQuantityIncrement = (total - totalCenterSum) / centerCount;
-    console.log('Center increment:', centerQuantityIncrement);
-
-    const rightCount = Object.values(selectedValues).filter(
-      (value) => value === 'right',
-    ).length;
-    const rightQuantityIncrement = (total - totalRightSum) / rightCount;
-
-    // const updatedQuantities = { ...quantities }; // Create a copy of the quantities object
-    console.log('CENTER COUNT: ', totalCenterSum);
-    if (centerCount > 1) {
-      if (totalCenterSum < total) {
-        if (selectedValues[lastChangedKey] === 'center') {
-          roundUpdatedQuantities[lastChangedKey] += total - totalCenterSum;
-        } else {
-          Object.keys(selectedValues).forEach((key) => {
-            const value = selectedValues[key];
-            if (value === 'left') {
-              roundUpdatedQuantities[key] = 0;
-            } else if (value === 'center') {
-              console.log(
-                'CENTER QUANTITY INCREMENT: ',
-                centerQuantityIncrement,
-              );
-              roundUpdatedQuantities[key] =
-                parseFloat(roundUpdatedQuantities[key]) +
-                centerQuantityIncrement;
-            }
-          });
-        }
-      } else {
-        Object.keys(selectedValues).forEach((key) => {
-          const value = selectedValues[key];
-          if (value === 'left') {
-            roundUpdatedQuantities[key] = 0;
-          } else if (value === 'center') {
-            console.log('CENTER QUANTITY INCREMENT: ', centerQuantityIncrement);
-            roundUpdatedQuantities[key] =
-              parseFloat(roundUpdatedQuantities[key]) + centerQuantityIncrement;
-          }
-        });
-      }
-    } else {
-      Object.keys(selectedValues).forEach((key) => {
-        if (selectedValues[key] === 'center') {
-          roundUpdatedQuantities[key] = total;
-        }
-      });
-    }
-
-    if (rightCount > 1) {
-      if (totalRightSum < total) {
-        if (selectedValues[lastChangedKey] === 'right') {
-          roundUpdatedQuantities[lastChangedKey] = total - totalRightSum;
-        }
-      } else {
-        Object.keys(selectedValues).forEach((key) => {
-          const value = selectedValues[key];
-          if (value === 'left') {
-            roundUpdatedQuantities[key] = 0;
-          } else if (value === 'right') {
-            roundUpdatedQuantities[key] =
-              parseFloat(roundUpdatedQuantities[key]) + rightQuantityIncrement;
-          }
-        });
-      }
-    } else {
-      Object.keys(selectedValues).forEach((key) => {
-        if (selectedValues[key] === 'right') {
-          roundUpdatedQuantities[key] = total;
-        }
-      });
-    }
-
-    // Update the quantities based on selected values
-    setQuantities(roundUpdatedQuantities); // Update the state with the new quantities
-    console.log(roundUpdatedQuantities);
+    applySteeringState(balanceSteering(steeringState, steeringContext));
+    setSteeringNotice('');
   };
 
   const newRoundToHundred = () => {
@@ -1349,6 +1258,7 @@ function Electrode({
     });
     setQuantities(updatedQuantities);
     setSelectedValues(updatedSelectedValues);
+    setSteeringNotice('');
   };
 
   function segmentedContact(aKey) {
@@ -2483,19 +2393,30 @@ function Electrode({
     // console.log('isAssisted: ', isAssisted);
   }
 
-  const handleQuantityChange = (quantity, key) => {
-    const updatedQuantities = { ...quantities, [key]: quantity };
-    console.log('key: ', key);
-    console.log('quantity: ', quantity);
-    console.log('updatedQuantities: ', updatedQuantities);
-    /// /////Steering for two components logic///////
-    // if (assistedModeEnabled) {
-    //   const newQuantities = assistedMode();
-    //   setQuantities(newQuantities);
-    // }
-    setQuantities(updatedQuantities);
+  const handleQuantityChange = (
+    quantity,
+    key,
+    position = selectedValues[key],
+  ) => {
+    const isAbbottActivation =
+      IPG === 'Abbott' &&
+      selectedValues[String(key)] === 'left' &&
+      position !== 'left';
+    applySteeringState(
+      changeContactQuantity(
+        steeringState,
+        steeringContext,
+        String(key),
+        Number(quantity),
+        position,
+      ),
+    );
     setLastChangedKey(key);
-    console.log('lastChangedKey: ', lastChangedKey);
+    setSteeringNotice(
+      isAbbottActivation
+        ? 'Abbott splits current evenly when a contact is activated. Edit the value again to customize the distribution.'
+        : '',
+    );
   };
 
   function gatherTripleToggleData(selectedValues, quantities) {
@@ -2606,37 +2527,19 @@ function Electrode({
   }
 
   const handlePercAmpChangeUp = () => {
-    // console.log('PercAmpButton: ', percAmpToggle);
-    roundToHundred();
-    if (percAmpToggle === 'left') {
-      newHandleUpButton();
-    } else if (percAmpToggle === 'center') {
-      newHandleUpButtonAmplitude();
-    }
+    applyDirectionalSteering('up');
   };
 
   const handlePercAmpChangeClockwise = () => {
-    if (percAmpToggle === 'left') {
-      handleClockwiseButton();
-    } else if (percAmpToggle === 'center') {
-      handleClockwiseButton();
-    }
+    applyDirectionalSteering('clockwise');
   };
 
   const handlePercAmpChangeCounterClockwise = () => {
-    if (percAmpToggle === 'left') {
-      handleCounterClockwiseButton();
-    } else if (percAmpToggle === 'center') {
-      handleCounterClockwiseButton();
-    }
+    applyDirectionalSteering('counterclockwise');
   };
 
   const handlePercAmpChangeDown = () => {
-    if (percAmpToggle === 'left') {
-      newHandleDownButton();
-    } else if (percAmpToggle === 'center') {
-      newHandleDownButtonAmplitude();
-    }
+    applyDirectionalSteering('down');
   };
 
   useEffect(() => {
@@ -2780,112 +2683,58 @@ function Electrode({
     setSelectedValues(updatedSelectedValues);
   };
 
-  const handleTotalAmplitudeChange = (e) => {
-    const newTotalAmplitude = e.target.value;
+  const commitTotalAmplitude = (rawAmplitude: string) => {
+    const parsedAmplitude = Number(rawAmplitude);
+    if (
+      rawAmplitude === '' ||
+      !Number.isFinite(parsedAmplitude) ||
+      parsedAmplitude < 0
+    ) {
+      setAmplitudeDraft(String(totalAmplitude ?? 0));
+      return;
+    }
+
+    const newTotalAmplitude = parsedAmplitude;
+    applySteeringState(
+      changeSteeringAmplitude(
+        steeringState,
+        steeringContext,
+        newTotalAmplitude,
+      ),
+    );
     setTotalAmplitude(newTotalAmplitude);
+    setAmplitudeDraft(String(newTotalAmplitude));
+    setSteeringNotice('');
   };
 
   let stimController = 0;
-  // const [currentLabel, setCurrentLabel] = useState('mA');
-  const [currentLabel, setCurrentLabel] = useState(
-    volAmpToggle === 'right' ? 'V' : 'mA',
-  );
-  // Generating here a more simple key code for the IPG that is selected
-  const handleIPG = () => {
-    if (IPG === 'Medtronic_Activa') {
-      stimController = 1;
-      if (percAmpToggle !== 'center') {
-        setPercAmpToggle('center');
-        // setIPGforOutput('')
-      }
-      // if (volAmpToggle === 'left') {
-      //   setIPGforOutput('mA');
-      // } else {
-      //   setIPGforOutput('V');
-      // }
-    } else if (IPG === 'Abbott') {
-      stimController = 2;
-      // setIPGforOutput('mA');
-    } else if (IPG === 'Medtronic_Percept') {
-      stimController = 3;
-      if (percAmpToggle !== 'center') {
-        setPercAmpToggle('center');
-      }
-      // setIPGforOutput('mA');
-    }
-    // else if (IPG === 'Boston') {
-    //   if (percAmpToggle === 'left') {
-    //     setIPGforOutput('%');
-    //   } else {
-    //     setIPGforOutput('mA');
-    //   }
-    // }
-    // console.log('stimController: ', stimController);
-    // console.log('IPG', IPG);
-  };
-
-  const calculatePercentageFromAmplitude = () => {
-    const updatedQuantities = { ...quantities };
-    Object.keys(updatedQuantities).forEach((key) => {
-      updatedQuantities[key] = (updatedQuantities[key] * 100) / totalAmplitude;
-    });
-    setQuantities(updatedQuantities);
-  };
-
-  const calculateAmplitudeFromPercentage = () => {
-    const updatedQuantities = { ...quantities };
-    Object.keys(updatedQuantities).forEach((key) => {
-      updatedQuantities[key] = (updatedQuantities[key] * totalAmplitude) / 100;
-    });
-    setQuantities(updatedQuantities);
-  };
+  if (IPG === 'Medtronic_Activa') stimController = 1;
+  if (IPG === 'Abbott') stimController = 2;
+  if (IPG === 'Medtronic_Percept') stimController = 3;
 
   const [percAmpAnimation, setPercAmpAnimation] = useState(null);
   // Percentage vs mA toggle switch
 
+  const updateSteeringUnit = (nextUnit: SteeringUnit) => {
+    if (nextUnit === steeringUnit) return;
+    applySteeringState(
+      changeSteeringUnit(steeringState, steeringContext, nextUnit),
+    );
+    setTogglePosition(nextUnit);
+    setPercAmpToggle({ '%': 'left', mA: 'center', V: 'right' }[nextUnit]);
+    setVolAmpToggle(nextUnit === 'V' ? 'right' : 'center');
+    setSteeringNotice('');
+  };
+
   const handlePercAmpToggleChange = (value) => {
-    console.log('value', value);
-    const newValue = value;
-    if (newValue === 'left') {
-      // setTotalAmplitude(0);
-      calculatePercentageFromAmplitude();
-      outputTogglePosition = '%';
-      setTogglePosition(outputTogglePosition);
-    } else if (newValue === 'center') {
-      outputTogglePosition = 'mA';
-      setTogglePosition(outputTogglePosition);
-      calculateAmplitudeFromPercentage();
-    }
-    console.log(value);
-    setPercAmpToggle(value);
+    updateSteeringUnit(value === 'left' ? '%' : 'mA');
   };
 
   const handleResearchToggleChange = (value) => {
-    console.log('ResearchToggle; ', researchToggle);
-    console.log('NewValue: ', value);
-    const newValue = value;
-    console.log(newValue);
-    if (newValue === 'left') {
-      calculatePercentageFromAmplitude();
-      outputTogglePosition = '%';
-      setTogglePosition(outputTogglePosition);
-      setCurrentLabel('mA');
-    } else if (newValue === 'center' && researchToggle !== 'right') {
-      calculateAmplitudeFromPercentage();
-      outputTogglePosition = 'mA';
-      setTogglePosition(outputTogglePosition);
-      setCurrentLabel('mA');
-    } else if (newValue === 'right') {
-      if (researchToggle === 'left') {
-        calculateAmplitudeFromPercentage();
-      }
-      outputTogglePosition = 'V';
-      setTogglePosition(outputTogglePosition);
-      setCurrentLabel('V');
-      console.log(outputTogglePosition);
-    }
-    setResearchToggle(newValue);
-    // setResearchTogg
+    let nextUnit: SteeringUnit = 'mA';
+    if (value === 'left') nextUnit = '%';
+    if (value === 'right') nextUnit = 'V';
+    updateSteeringUnit(nextUnit);
   };
 
   const [assistedToggle, setAssistedToggle] = useState('left');
@@ -2897,26 +2746,12 @@ function Electrode({
   const ampToggle = 'left';
 
   const handleVolAmpToggleChange = (value) => {
-    const newValue = value;
-    console.log('VolAmpToggleChange');
-    if (newValue === 'left') {
-      outputTogglePosition = 'mA';
-      calculateQuantitiesWithDistribution();
-      // setCurrentLabel('mA');
-    } else if (newValue === 'right') {
-      outputTogglePosition = 'V';
-      // setCurrentLabel('V');
-      console.log('Current Label: ', currentLabel);
-    }
-    setTogglePosition(outputTogglePosition);
-    setCurrentLabel(outputTogglePosition);
-    setVolAmpToggle(value);
+    updateSteeringUnit(value === 'right' ? 'V' : 'mA');
   };
 
   const [show, setShow] = useState(false);
 
   const handleCheck = () => {
-    handleIPG();
     if (stimController === 0) {
       if (percAmpToggle === 'left') {
         let negSum = 0;
@@ -3014,42 +2849,6 @@ function Electrode({
     { name: 'mA', value: 'center' },
     { name: 'V', value: 'right' },
   ];
-
-  const [stimMode, setStimMode] = useState('left');
-
-  const stimulationModes = [
-    { name: '%', value: 'left' },
-    { name: 'mA', value: 'center' },
-    { name: 'V', value: 'right' },
-  ];
-
-  const handleStimModeChange = (value) => {
-    console.log('ResearchToggle; ', researchToggle);
-    console.log('NewValue: ', value);
-    const newValue = value;
-    console.log(newValue);
-    if (newValue === 'left') {
-      calculatePercentageFromAmplitude();
-      outputTogglePosition = '%';
-      setTogglePosition(outputTogglePosition);
-      setCurrentLabel('mA');
-    } else if (newValue === 'center' && researchToggle !== 'right') {
-      calculateAmplitudeFromPercentage();
-      outputTogglePosition = 'mA';
-      setTogglePosition(outputTogglePosition);
-      setCurrentLabel('mA');
-    } else if (newValue === 'right') {
-      if (researchToggle === 'left') {
-        calculateAmplitudeFromPercentage();
-      }
-      outputTogglePosition = 'V';
-      setTogglePosition(outputTogglePosition);
-      setCurrentLabel('V');
-      console.log(outputTogglePosition);
-    }
-    setStimMode(newValue);
-    // setResearchTogg
-  };
 
   const handleVisModelChange = (event) => {
     setVisModel(event.target.value);
@@ -3312,119 +3111,34 @@ function Electrode({
   //   handleActivaVoltage,
   // ]);
 
-  useEffect(() => {
-    const calculateQuantitiesWithDistributionAbbott = () => {
-      // Calculate the quantity increment for 'center' and 'right' values
-      const total = totalAmplitude;
-      console.log('selectedValues: ', selectedValues);
-      console.log('quantities: ', quantities);
-      // total = totalAmplitude;
-      console.log('total: ', total);
-      const centerCount = Object.values(selectedValues).filter(
-        (value) => value === 'center',
-      ).length;
-      const centerQuantityIncrement = centerCount > 0 ? total / centerCount : 0;
-      console.log('CenterCount: ', centerCount);
-
-      const rightCount = Object.values(selectedValues).filter(
-        (value) => value === 'right',
-      ).length;
-      const rightQuantityIncrement = rightCount > 0 ? total / rightCount : 0;
-
-      const updatedQuantities = { ...quantities }; // Create a copy of the quantities object
-
-      // Update the quantities based on selected values
-      Object.keys(selectedValues).forEach((key) => {
-        const value = selectedValues[key];
-        // console.log("key="+key + ", value=" + value);
-        if (value === 'left') {
-          updatedQuantities[key] = 0;
-        } else if (value === 'center') {
-          console.log('CENTER: ', centerQuantityIncrement);
-          updatedQuantities[key] = centerQuantityIncrement;
-          console.log('updated: ', updatedQuantities);
-        } else if (value === 'right') {
-          updatedQuantities[key] = rightQuantityIncrement;
-        }
-        // updatedQuantities[key] = 20;
-      });
-
-      // console.log(quantities);
-      setQuantities(updatedQuantities);
-      // setSelectedValues(selectedValue);
-
-      console.log(quantities);
-      // Update the state with the new quantities
-    };
-    if (IPG === 'Abbott') {
-      calculateQuantitiesWithDistributionAbbott();
-    }
-  }, [IPG, selectedValues, totalAmplitude]);
-
-  useEffect(() => {
-    const semiAssist = () => {
-      const updatedQuantities = { ...quantities };
-      let total = totalAmplitude;
-      if (IPG === 'Boston') {
-        if (percAmpToggle === 'left') {
-          total = 100;
-        }
-      }
-      if (IPG === 'Research') {
-        if (researchToggle === 'left') {
-          total = 100;
-        }
-      }
-      // const updatedSelectedValues = { ...selectedValues };
-      let count = 0;
-      const lastKey = [];
-      Object.keys(updatedQuantities).forEach((key) => {
-        if (key !== 0 && selectedValues[key] === 'center') {
-          count += 1;
-          lastKey.push(key);
-        }
-      });
-      if (count === 1) {
-        updatedQuantities[lastKey[0]] = total;
-      }
-
-      let rightCount = 0;
-      const rightLastKey = [];
-      Object.keys(updatedQuantities).forEach((key) => {
-        if (selectedValues[key] === 'right') {
-          rightCount += 1;
-          rightLastKey.push(key);
-        }
-      });
-      if (rightCount === 1) {
-        updatedQuantities[rightLastKey[0]] = total;
-      }
-      setQuantities(updatedQuantities);
-    };
-    if (radioValue === '1' && IPG !== 'Abbott') {
-      semiAssist();
-    }
-  }, [radioValue, IPG, totalAmplitude, selectedValues]);
-
-  useEffect(() => {
-    const handleActivaVoltage = () => {
-      const updatedQuantities = { ...quantities };
-      Object.keys(updatedQuantities).forEach((key) => {
-        if (selectedValues[key] !== 'left') {
-          updatedQuantities[key] = totalAmplitude;
-        }
-      });
-      setQuantities(updatedQuantities);
-    };
-    if (currentLabel === 'V' && IPG === 'Medtronic_Activa') {
-      handleActivaVoltage();
-    }
-  }, [currentLabel, IPG, totalAmplitude, selectedValues]);
-
   /// //////////////////////////////////////////////////////////////////////////////////////////////////////////
+  const maximumContactQuantity =
+    steeringUnit === '%' ? 100 : Math.max(0, Number(totalAmplitude) || 0);
+  const contactQuantityUnit = steeringUnit;
+  const maximumContactQuantityFor = () => maximumContactQuantity;
+  const quantityReadOnly = IPG === 'Medtronic_Activa' && steeringUnit === 'V';
+
+  const polarityTotal = (polarity: string) =>
+    Object.keys(quantities).reduce(
+      (sum, key) =>
+        selectedValues[key] === polarity
+          ? sum + Math.max(0, Number(quantities[key]) || 0)
+          : sum,
+      0,
+    );
+  const negativeTotal = polarityTotal('center');
+  const positiveTotal = polarityTotal('right');
+  const targetTotal = steeringUnit === '%' ? 100 : totalAmplitude;
+  const formatTotal = (value: unknown) => {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return '0';
+    if (Number.isInteger(numericValue)) return String(numericValue);
+    return String(Number(numericValue.toFixed(2)));
+  };
+
   return (
     <div style={{ position: 'relative' }}>
-      <div className="container">
+      <div className="electrode-programmer-layout">
         <div
           className={
             elspec.tipisactive === 0
@@ -3490,6 +3204,11 @@ function Electrode({
               >
                 OSS-DBS Settings
               </Button>
+              {ossSettingsStatus && (
+                <div role="status" style={{ marginTop: '6px', color: '#333' }}>
+                  {ossSettingsStatus}
+                </div>
+              )}
             </div>
           )}
           <div className="toggle-controls">
@@ -3501,8 +3220,19 @@ function Electrode({
                 pattern="[0-9]+"
                 step="0.1"
                 min="0"
-                value={totalAmplitude}
-                onChange={handleTotalAmplitudeChange}
+                value={amplitudeDraft}
+                onChange={(event) => setAmplitudeDraft(event.target.value)}
+                onFocus={(event) => {
+                  setIsEditingAmplitude(true);
+                  event.currentTarget.select();
+                }}
+                onBlur={(event) => {
+                  setIsEditingAmplitude(false);
+                  commitTotalAmplitude(event.currentTarget.value);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') event.currentTarget.blur();
+                }}
                 style={{ fontSize: '18px', padding: '10px' }}
               />
               <span className="input-label" style={{ fontSize: '18px' }}>
@@ -3586,6 +3316,30 @@ function Electrode({
               )}
             </div>
           </div>
+          <div
+            className="steering-distribution-summary"
+            role="status"
+            aria-live="polite"
+          >
+            {steeringUnit === 'V' ? (
+              <span>
+                {IPG === 'Medtronic_Activa'
+                  ? 'Each active contact receives the source voltage.'
+                  : 'Voltage is set independently on each active contact.'}
+              </span>
+            ) : (
+              <>
+                <span>
+                  − {formatTotal(negativeTotal)} / {formatTotal(targetTotal)}{' '}
+                  {contactQuantityUnit}
+                </span>
+                <span>
+                  + {formatTotal(positiveTotal)} / {formatTotal(targetTotal)}{' '}
+                  {contactQuantityUnit}
+                </span>
+              </>
+            )}
+          </div>
           <div className="input-controls">
             <div className="input-field">
               <input
@@ -3594,7 +3348,7 @@ function Electrode({
                 name="quantity"
                 pattern="[0-9]+"
                 value={60}
-                disabled={visModel !== "6"}
+                disabled={visModel !== '6'}
                 onChange={handleParameterChange('parameter1')}
               />
               <span className="input-label">μs</span>
@@ -3609,7 +3363,7 @@ function Electrode({
                 value={130}
                 onChange={handleParameterChange('parameter2')}
               />
-              <span className="input-label">hz</span>
+              <span className="input-label">Hz</span>
             </div>
           </div>
           <div
@@ -3655,7 +3409,7 @@ function Electrode({
                   marginRight: '10px',
                 }}
               >
-                Refactor
+                Normalize
               </Button>
               <Button
                 variant="secondary"
@@ -3672,8 +3426,9 @@ function Electrode({
               </Button>
             </ButtonGroup>
           </div>
-          {handleIPG()}
-          {(IPG === 'Boston' || IPG === 'Medtronic_Percept') &&
+          {(IPG === 'Boston' ||
+            IPG === 'Medtronic_Percept' ||
+            IPG === 'Research') &&
             (stimController === 0 || stimController === 3) && (
               <div className="">
                 <hr
@@ -3688,6 +3443,8 @@ function Electrode({
                   <Button
                     variant="secondary"
                     onClick={handlePercAmpChangeUp}
+                    disabled={steeringUnit === 'V'}
+                    title="Move 10% toward the proximal end"
                     style={{
                       borderRadius: '10px',
                       backgroundColor: 'white',
@@ -3701,7 +3458,9 @@ function Electrode({
                   </Button>
                   <Button
                     variant="secondary"
-                    disabled
+                    onClick={() => applyDirectionalSteering('level')}
+                    disabled={steeringUnit === 'V'}
+                    title="Split each active segmented level evenly"
                     style={{
                       borderRadius: '10px',
                       backgroundColor: 'white',
@@ -3716,6 +3475,8 @@ function Electrode({
                   <Button
                     variant="secondary"
                     onClick={handlePercAmpChangeDown}
+                    disabled={steeringUnit === 'V'}
+                    title="Move 10% toward the distal end"
                     style={{
                       borderRadius: '10px',
                       backgroundColor: 'white',
@@ -3731,6 +3492,8 @@ function Electrode({
                   <Button
                     variant="secondary"
                     onClick={handlePercAmpChangeClockwise}
+                    disabled={steeringUnit === 'V' || elspec.isdirected !== 1}
+                    title="Rotate 10% clockwise"
                     style={{
                       borderRadius: '10px',
                       backgroundColor: 'white',
@@ -3759,6 +3522,8 @@ function Electrode({
                   <Button
                     variant="secondary"
                     onClick={handlePercAmpChangeCounterClockwise}
+                    disabled={steeringUnit === 'V' || elspec.isdirected !== 1}
+                    title="Rotate 10% counterclockwise"
                     style={{
                       borderRadius: '10px',
                       backgroundColor: 'white',
@@ -3772,19 +3537,57 @@ function Electrode({
                 </ButtonGroup>
               </div>
             )}
-          {(IPG === 'Boston' || IPG === 'Medtronic_Percept') && (
-            <div className="">
-              <SplitEvenButton
-                className="svgButtons"
-                onClick={handleSplitEvenButton}
-              />
-              <ForwardButton
-                className="svgButtons"
-                onClick={handleForwardButton}
-              />
-              <BackButton className="svgButtons" onClick={handleBackButton} />
-              <LeftButton className="svgButtons" onClick={handleRightButton} />
-              <RightButton className="svgButtons" onClick={handleLeftButton} />
+          {(IPG === 'Boston' ||
+            IPG === 'Medtronic_Percept' ||
+            IPG === 'Research') &&
+            steeringUnit !== 'V' &&
+            elspec.isdirected === 1 && (
+              <div className="directional-preset-buttons">
+                <SplitEvenButton
+                  className="svgButtons"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Split segmented levels evenly"
+                  onClick={() => applyDirectionalSteering('level')}
+                  onKeyDown={handleDirectionalKeyDown('level')}
+                />
+                <ForwardButton
+                  className="svgButtons"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Steer forward"
+                  onClick={() => applyDirectionalSteering('forward')}
+                  onKeyDown={handleDirectionalKeyDown('forward')}
+                />
+                <BackButton
+                  className="svgButtons"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Steer backward"
+                  onClick={() => applyDirectionalSteering('back')}
+                  onKeyDown={handleDirectionalKeyDown('back')}
+                />
+                <LeftButton
+                  className="svgButtons"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Steer left"
+                  onClick={() => applyDirectionalSteering('left')}
+                  onKeyDown={handleDirectionalKeyDown('left')}
+                />
+                <RightButton
+                  className="svgButtons"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Steer right"
+                  onClick={() => applyDirectionalSteering('right')}
+                  onKeyDown={handleDirectionalKeyDown('right')}
+                />
+              </div>
+            )}
+          {steeringNotice && (
+            <div className="steering-notice" role="status">
+              {steeringNotice}
             </div>
           )}
           {IPG === 'Medtronic_Activa' && (
@@ -3829,7 +3632,9 @@ function Electrode({
               boxShadow: '0 4px 8px rgba(0, 0, 0, 0.4)',
               border: 'none',
               outline: 'none',
-              marginTop: IPG === 'Research' || IPG === 'Abbott' ? '60px' : '-60px',
+              // Keep the button above the divider line for hit-testing.
+              position: 'relative',
+              zIndex: 1,
             }}
           >
             {showViewer ? 'Close Viewer' : 'Open Viewer'}
@@ -3871,10 +3676,14 @@ function Electrode({
                           onQuantityChange={(currentPosition, quantityValue) =>
                             handleQuantityChange(
                               quantityValue,
-                              // currentPosition,
                               ipg.key,
+                              currentPosition,
                             )
                           }
+                          maxQuantity={maximumContactQuantityFor(ipg.key)}
+                          unit={contactQuantityUnit}
+                          contactName="IPG case"
+                          quantityReadOnly={quantityReadOnly}
                         />
                       </div>
                     )}
@@ -3927,10 +3736,14 @@ function Electrode({
                           onQuantityChange={(currentPosition, quantityValue) =>
                             handleQuantityChange(
                               quantityValue,
-                              // currentPosition,
                               Lcon.key,
+                              currentPosition,
                             )
                           }
+                          maxQuantity={maximumContactQuantityFor(Lcon.key)}
+                          unit={contactQuantityUnit}
+                          contactName={`Contact ${names[Lcon.key]}`}
+                          quantityReadOnly={quantityReadOnly}
                         />
                       </div>
                     )}
@@ -3986,10 +3799,14 @@ function Electrode({
                         onQuantityChange={(currentPosition, quantityValue) =>
                           handleQuantityChange(
                             quantityValue,
-                            // currentPosition,
                             svg.key,
+                            currentPosition,
                           )
                         }
+                        maxQuantity={maximumContactQuantityFor(svg.key)}
+                        unit={contactQuantityUnit}
+                        contactName={`Contact ${names[svg.key]}`}
+                        quantityReadOnly={quantityReadOnly}
                       />
                     </div>
                   )}
@@ -4008,13 +3825,14 @@ function Electrode({
             ))}
           </div>
           <div
-              className="right-contacts-test"
-              style={
-                elspec.matfname === 'boston_vercise_cartesia_hx'
-                  ? { marginTop: '788px' }
-                  : undefined
-              }
-            >            {rightContacts.map((rCon) => (
+            className="right-contacts-test"
+            style={
+              elspec.matfname === 'boston_vercise_cartesia_hx'
+                ? { marginTop: '788px' }
+                : undefined
+            }
+          >
+            {rightContacts.map((rCon) => (
               <div className="image-item-right">
                 <div className="image-container-right">
                   {React.cloneElement(rCon, {
@@ -4046,10 +3864,14 @@ function Electrode({
                         onQuantityChange={(currentPosition, quantityValue) =>
                           handleQuantityChange(
                             quantityValue,
-                            // currentPosition,
                             rCon.key,
+                            currentPosition,
                           )
                         }
+                        maxQuantity={maximumContactQuantityFor(rCon.key)}
+                        unit={contactQuantityUnit}
+                        contactName={`Contact ${names[rCon.key]}`}
+                        quantityReadOnly={quantityReadOnly}
                       />
                     </div>
                   )}
@@ -4077,19 +3899,17 @@ function Electrode({
               justifyContent: 'center',
               alignItems: 'center',
               overflow: 'visible',
-              marginLeft: '160px',
+              marginLeft: '24px',
             }}
           >
             <PlyViewer
               quantities={quantities}
-              setQuantities={setQuantities}
               selectedValues={selectedValues}
-              setSelectedValues={setSelectedValues}
               amplitude={totalAmplitude}
-              setAmplitude={setTotalAmplitude}
               side={name}
               historical={historical}
-              togglePosition={percAmpToggle}
+              steeringUnit={steeringUnit}
+              onProgramChange={applyViewerProgram}
               tab={name}
               names={names}
               elspec={elspec}
@@ -4097,15 +3917,15 @@ function Electrode({
           </div>
         )}
       </div>
-      {/* <OSSSettingsModal
+      <OSSSettingsModal
         show={showOSSSettingsModal}
         onHide={() => setShowOSSSettingsModal(false)}
         settings={ossSettings}
         onSave={(settings) => {
-          setOssSettings(settings);
-          console.log('OSS Settings saved:', settings);
+          setOSSSettings(settings);
+          setOSSSettingsStatus('Settings saved with this stimulation.');
         }}
-      /> */}
+      />
     </div>
   );
 }

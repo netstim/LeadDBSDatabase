@@ -2422,6 +2422,9 @@ function PlyViewer({
 
   useEffect(() => {
     const scene = sceneRef.current;
+    if (!scene || !Array.isArray(plotNiiCoords) || plotNiiCoords.length === 0) {
+      return;
+    }
     try {
       // Step 1: Filter extreme R values
       const filteredCoords = plotNiiCoords.filter(
@@ -2596,6 +2599,7 @@ function PlyViewer({
     const bounds = reconstructionCameraBounds();
     if (!camera || !bounds) return;
     const distance = Math.max(25, bounds.size.length() * 2.5);
+    camera.up.set(0, 0, 1);
     camera.position.copy(
       bounds.center.clone().add(new THREE.Vector3(0, -distance, distance)),
     );
@@ -2608,14 +2612,19 @@ function PlyViewer({
       ),
     );
     camera.updateProjectionMatrix();
+    // OrbitControls re-aims the camera at its own target every frame, so the
+    // target must follow the new framing or the lookAt above is overridden.
+    const controls = controlsRef.current;
+    if (controls) {
+      controls.target.copy(bounds.center);
+      controls.update();
+    }
   };
 
   useEffect(() => {
     if (recoData) {
       changeCameraAngle();
-      if (electrodeGeometryStatus === 'fallback') {
-        changePrimaryCameraAngle();
-      }
+      changePrimaryCameraAngle();
     }
   }, [electrodeGeometryStatus, recoData, side]);
 
@@ -4488,7 +4497,7 @@ function PlyViewer({
   }, []);
 
   return (
-    <div style={{ marginTop: '-120px' }}>
+    <div>
       <div style={isFullScreen ? fullScreenStyle : viewerContainerStyle}>
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           {/* <IconButton

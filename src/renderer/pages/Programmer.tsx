@@ -7,7 +7,7 @@
  * individual patient programming and group programming modes.
  */
 
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 // Styles
@@ -16,9 +16,19 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 
 // Components
 import GroupArchitecture from '../components/group/GroupArchitecture';
-import { PatientContext } from '../contexts/PatientContext';
 import initializeS from '../utils/InitializeS';
 import electrodeModelsSpecs from '../assets/data/electrodeModels.json';
+import { OSSSettings, normalizeOSSSettings } from '../utils/OSSSettings';
+import {
+  exportSteeringQuantities,
+  importedIPG,
+  importSteeringSource,
+  writeSteeringMetadata,
+} from '../utils/stimulationUnits';
+import withoutStimulationContacts, {
+  LEAD_DBS_SOURCE_INDICES,
+} from '../utils/leadDbsSources';
+import { getSteeringUnit } from '../utils/currentSteering';
 
 // Type definitions
 interface Patient {
@@ -50,6 +60,7 @@ interface PatientState {
   filePath: string;
   stimChanged: boolean;
   allTemplateSpaces: number;
+  ossSettings: OSSSettings;
 }
 
 interface LocationState {
@@ -59,20 +70,77 @@ interface LocationState {
   leadDBS?: boolean;
 }
 
+const normalizeTemplateSpace = (value: unknown): number => {
+  if (typeof value === 'string') {
+    return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase()) ? 1 : 0;
+  }
+  return value === true || value === 1 ? 1 : 0;
+};
+
+const launchPatientIds = (stimulationData: any): string[] => {
+  if (
+    stimulationData?.scope === 'patient' &&
+    typeof stimulationData?.selectedPatientId === 'string' &&
+    stimulationData.selectedPatientId
+  ) {
+    return [stimulationData.selectedPatientId];
+  }
+  if (Array.isArray(stimulationData?.subjects)) {
+    const subjectIds = stimulationData.subjects
+      .map((subject: any) => subject?.id || subject?.patientname)
+      .filter(Boolean);
+    if (subjectIds.length > 0) return subjectIds;
+  }
+  if (Array.isArray(stimulationData?.patientname)) {
+    return stimulationData.patientname.filter(Boolean);
+  }
+  return stimulationData?.patientname ? [stimulationData.patientname] : [];
+};
+
+const launchElectrodeModel = (
+  stimulationData: any,
+  patientId: string,
+  fallbackIndex = 0,
+): string => {
+  const subject = Array.isArray(stimulationData?.subjects)
+    ? stimulationData.subjects.find(
+        (candidate: any) =>
+          (candidate?.id || candidate?.patientname) === patientId,
+      )
+    : null;
+  if (subject?.electrodeModel) return subject.electrodeModel;
+
+  const patientIndex = launchPatientIds(stimulationData).indexOf(patientId);
+  if (Array.isArray(stimulationData?.electrodeModels)) {
+    return (
+      stimulationData.electrodeModels[
+        patientIndex >= 0 ? patientIndex : fallbackIndex
+      ] || 'Boston Vercise Directed'
+    );
+  }
+  return (
+    stimulationData?.electrodeModels ||
+    stimulationData?.elmodel ||
+    'Boston Vercise Directed'
+  );
+};
+
 function Programmer() {
   // Context and navigation
-  const allPatients = useContext(PatientContext);
   const location = useLocation();
   const navigate = useNavigate();
 
   // Extract data from location state
-  const { patient, timeline, directoryPath, leadDBS } = (location.state as LocationState) || {};
+  const { patient, timeline, directoryPath, leadDBS } =
+    (location.state as LocationState) || {};
 
   // State management
   const electrodeList: any[] = [];
   const [patientName, setPatientName] = useState<string>('');
   const [patients, setPatients] = useState<string[]>([]);
-  const [patientStates, setPatientStates] = useState<Record<string, PatientState>>({});
+  const [patientStates, setPatientStates] = useState<
+    Record<string, PatientState>
+  >({});
   const [importNewS, setImportNewS] = useState<Record<string, any>>({});
   const [electrodeMaster, setElectrodeMaster] = useState<string>('');
   const [ipgMaster, setIpgMaster] = useState<string>('');
@@ -80,7 +148,11 @@ function Programmer() {
   const [mode, setMode] = useState<string>('');
   const [type, setType] = useState<string>('');
   const [zoomLevel, setZoomLevel] = useState<number>(-3);
-  const [historical, setHistorical] = useState<LocationState | null>(location.state);
+  const [historical, setHistorical] = useState<LocationState | null>(
+    location.state,
+  );
+  const [saveInProgress, setSaveInProgress] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   // Constants
   const initialState: PatientState = {
@@ -105,6 +177,7 @@ function Programmer() {
     filePath: '',
     stimChanged: true,
     allTemplateSpaces: 0,
+    ossSettings: normalizeOSSSettings(),
   };
 
   // Electrode models configuration
@@ -216,8 +289,12 @@ function Programmer() {
    * @returns The internal value for the electrode model
    */
   const handleImportedElectrode = (importedElectrode: string): string => {
+    const electrodeName =
+      typeof importedElectrode === 'string'
+        ? importedElectrode
+        : 'Boston Vercise Directed';
     const electrodeInfo = electrodeModels.find(
-      (item) => item.displayName === importedElectrode,
+      (item) => item.displayName === electrodeName,
     );
     return electrodeInfo ? electrodeInfo.value : 'boston_vercise_directed';
   };
@@ -228,20 +305,24 @@ function Programmer() {
    * @returns The IPG type string
    */
   const handleIPG = (importedElectrode: string): string => {
-    if (importedElectrode.includes('Boston')) {
+    const electrodeName =
+      typeof importedElectrode === 'string'
+        ? importedElectrode
+        : 'Boston Vercise Directed';
+    if (electrodeName.includes('Boston')) {
       return 'Boston';
     }
-    if (importedElectrode.includes('Abbott')) {
+    if (electrodeName.includes('Abbott')) {
       return 'Abbott';
     }
     if (
-      importedElectrode === 'Medtronic 3387' ||
-      importedElectrode === 'Medtronic 3389' ||
-      importedElectrode === 'Medtronic 3391'
+      electrodeName === 'Medtronic 3387' ||
+      electrodeName === 'Medtronic 3389' ||
+      electrodeName === 'Medtronic 3391'
     ) {
       return 'Medtronic_Activa';
     }
-    if (importedElectrode.includes('Medtronic')) {
+    if (electrodeName.includes('Medtronic')) {
       return 'Medtronic_Percept';
     }
     return 'Research';
@@ -264,90 +345,38 @@ function Programmer() {
     return `${year}${month}${day}${randomNums}`;
   }
 
-  const gatherImportedDataNew = (jsonData: any, importedElectrode: any) => {
+  const gatherImportedDataNew = (
+    jsonData: any,
+    importedElectrode: any,
+    runSettings: any = {},
+  ) => {
     console.log('S: ', jsonData);
     setImportNewS(jsonData);
-    let outputIPG = handleIPG(importedElectrode);
+    const outputIPG = importedIPG(jsonData, handleIPG(importedElectrode));
     console.log('OutputIPG: ', outputIPG);
     const newQuantities: Record<number, any> = {};
     const newSelectedValues: Record<number, any> = {};
     const newTotalAmplitude: Record<number, any> = {};
     const newAllQuantities: Record<number, any> = {};
     const newAllVolAmpToggles: Record<number, any> = {};
+    const newAllPercAmpToggles: Record<number, any> = {};
     const newAllTogglePositions: Record<number, any> = {};
 
-    console.log('Imported Amplitude: ', jsonData.amplitude);
-    // To get the number of elements (contacts) in jsonData.Ls1 (excluding keys like 'case', 'amp', etc.):
-    const ls1ContactKeys = Object.keys(jsonData.Ls1).filter(
-      (key) => key.startsWith('k')
-    );
-    console.log('Number of contacts in Ls1:', ls1ContactKeys.length);
-    const loopSize = ls1ContactKeys.length;
-    for (let j = 1; j < 5; j++) {
-      newTotalAmplitude[j+4] = jsonData.amplitude[0][j - 1];
-      newTotalAmplitude[j] = jsonData.amplitude[1][j - 1];
-
-      console.log('newTotalAmplitude: ', newTotalAmplitude);
-
-      const dynamicKey2 = `Ls${j}`;
-      const dynamicKey3 = `Rs${j}`;
-      if (jsonData[dynamicKey2].va === 2) {
-        newAllVolAmpToggles[j] = 'center';
-        newAllTogglePositions[j] = '%';
-      } else if (jsonData[dynamicKey2].va === 1) {
-        newAllVolAmpToggles[j] = 'right';
-        newAllTogglePositions[j] = 'V';
-      }
-
-      if (jsonData[dynamicKey3].va === 2) {
-        newAllVolAmpToggles[j + 4] = 'center';
-        newAllTogglePositions[j + 4] = '%';
-      } else if (jsonData[dynamicKey3].va === 1) {
-        newAllVolAmpToggles[j + 4] = 'right';
-        newAllTogglePositions[j + 4] = 'V';
-      }
-
-      for (let i = 0; i < loopSize; i++) {
-        const dynamicKey = `k${i + 1}`;
-        const dynamicKey1 = `k${i + 1}`;
-
-        if (jsonData[dynamicKey2] && jsonData[dynamicKey2][dynamicKey]) {
-          newQuantities[j] = newQuantities[j] || {};
-          newQuantities[j][i + 1] = parseFloat(
-            jsonData[dynamicKey2][dynamicKey].perc,
-          );
-          newQuantities[j][0] = parseFloat(jsonData[dynamicKey2].case.perc);
-
-          const { pol } = jsonData[dynamicKey2][dynamicKey];
-          newSelectedValues[j] = newSelectedValues[j] || {};
-          newSelectedValues[j][i + 1] =
-            pol === 0 ? 'left' : pol === 1 ? 'center' : 'right';
-
-          const casePol = jsonData[dynamicKey2].case.pol;
-          newSelectedValues[j][0] =
-            casePol === 0 ? 'left' : casePol === 1 ? 'center' : 'right';
-        }
-
-        if (jsonData[dynamicKey3] && jsonData[dynamicKey3][dynamicKey1]) {
-          newQuantities[j + 4] = newQuantities[j + 4] || {};
-          newQuantities[j + 4][i + 1] = parseFloat(
-            jsonData[dynamicKey3][dynamicKey1].perc,
-          );
-          newQuantities[j + 4][0] = parseFloat(jsonData[dynamicKey3].case.perc);
-
-          const { pol } = jsonData[dynamicKey3][dynamicKey1];
-          newSelectedValues[j + 4] = newSelectedValues[j + 4] || {};
-          newSelectedValues[j + 4][i + 1] =
-            pol === 0 ? 'left' : pol === 1 ? 'center' : 'right';
-
-          const casePol = jsonData[dynamicKey3].case.pol;
-          newSelectedValues[j + 4][0] =
-            casePol === 0 ? 'left' : casePol === 1 ? 'center' : 'right';
-        }
-      }
-
-      newAllQuantities[j] = newQuantities[j];
-      newAllQuantities[j + 4] = newQuantities[j + 4];
+    for (let position = 1; position <= 8; position += 1) {
+      const hemisphere = position > 4 ? 0 : 1;
+      const sourceIndex = (position - 1) % 4;
+      const imported = importSteeringSource(
+        jsonData,
+        position,
+        outputIPG,
+        jsonData.amplitude?.[hemisphere]?.[sourceIndex],
+      );
+      newQuantities[position] = imported.quantities;
+      newSelectedValues[position] = imported.selectedValues;
+      newTotalAmplitude[position] = imported.totalAmplitude;
+      newAllTogglePositions[position] = imported.unit;
+      newAllPercAmpToggles[position] = imported.percAmpToggle;
+      newAllVolAmpToggles[position] = imported.volAmpToggle;
     }
 
     const filteredValues = Object.keys(newSelectedValues)
@@ -378,25 +407,6 @@ function Programmer() {
       outputVisModel = '6';
     }
 
-    console.log('TEST!L: ', outputIPG);
-    if (outputIPG.includes('Medtronic')) {
-      Object.keys(filteredQuantities).forEach((key) => {
-        console.log('Test: ', filteredQuantities[key]);
-        Object.keys(filteredQuantities[key]).forEach((key2) => {
-          filteredQuantities[key][key2] =
-            (filteredQuantities[key][key2] / 100) * newTotalAmplitude[key];
-        });
-      });
-    }
-
-    Object.keys(newAllVolAmpToggles).forEach((key) => {
-      if (newAllVolAmpToggles[key] === 'right') {
-        outputIPG = 'Medtronic_Activa';
-        // setIpgMaster('Medtronic_Activa');
-        return '';
-      }
-    });
-
     console.log('OutputIPG, 2: ', outputIPG);
 
     return {
@@ -405,8 +415,15 @@ function Programmer() {
       newTotalAmplitude,
       outputVisModel,
       newAllVolAmpToggles,
+      newAllPercAmpToggles,
       outputIPG,
       newAllTogglePositions,
+      allTemplateSpaces: normalizeTemplateSpace(
+        jsonData.estimateInTemplate ?? runSettings.estimateInTemplate,
+      ),
+      ossSettings: normalizeOSSSettings(
+        jsonData.ossSettings ?? runSettings.ossSettings ?? runSettings.oss,
+      ),
     };
 
     // Need to add some type of filtering here that detects whether it is Medtronic Activa, and then needs to put just mA values, not %
@@ -415,12 +432,25 @@ function Programmer() {
   const handleTimelines = (timelineOutput, stimulationData) => {
     console.log('Processing timelines:', timelineOutput);
     console.log('Processing stimulation data: ', stimulationData);
-    setTotalS(stimulationData.S);
+    setTotalS(
+      stimulationData.S ||
+        (Array.isArray(stimulationData.subjects)
+          ? stimulationData.subjects.map(
+              (subject) => subject?.stimulation?.S || subject?.stimulation,
+            )
+          : {}),
+    );
     setMode(stimulationData.mode);
     setType(stimulationData.type);
     console.log('Stimulation Mode: ', stimulationData.mode);
-    window.electron.ipcRenderer.sendMessage('revert-to-standard', '');
     let initialStates = {}; // Initialize the object to store the processed states
+    const launchTemplateSpace = normalizeTemplateSpace(
+      stimulationData.runSettings?.estimateInTemplate,
+    );
+    const launchOSSSettings = normalizeOSSSettings(
+      stimulationData.runSettings?.ossSettings ||
+        stimulationData.runSettings?.oss,
+    );
     if (stimulationData.mode === 'standalone') {
       if (!timelineOutput[timeline]) {
         // let electrodes = 'Boston Vercise Directed';
@@ -435,15 +465,22 @@ function Programmer() {
         );
         console.log('Patient Data: ', patientData);
         const processedS = patientData
-          ? gatherImportedDataNew(patientData, electrodes)
+          ? gatherImportedDataNew(
+              patientData,
+              electrodes,
+              stimulationData.runSettings,
+            )
           : {
               filteredQuantities: {},
               filteredValues: {},
               newTotalAmplitude: {},
               outputVisModel: '3',
               newAllVolAmpToggles: {},
+              newAllPercAmpToggles: {},
               outputIPG: handleIPG(electrodes),
               newAllTogglePositions: {},
+              allTemplateSpaces: launchTemplateSpace,
+              ossSettings: launchOSSSettings,
             };
         initialStates[timeline] = {
           ...initialState,
@@ -455,7 +492,11 @@ function Programmer() {
           allTotalAmplitudes: processedS.newTotalAmplitude,
           visModel: processedS.outputVisModel,
           allVolAmpToggles: processedS.newAllVolAmpToggles,
+          allPercAmpToggles: processedS.newAllPercAmpToggles,
           allTogglePositions: processedS.newAllTogglePositions,
+          allTemplateSpaces:
+            processedS.allTemplateSpaces ?? initialState.allTemplateSpaces,
+          ossSettings: processedS.ossSettings ?? initialState.ossSettings,
           model: electrodes,
         };
       }
@@ -465,20 +506,29 @@ function Programmer() {
         console.log('Timeline Output: ', timelineOutput);
         let electrodes = patient.elmodel || 'Boston Vercise Directed';
         const currentTimeline = key;
-        const patientData = timelineOutput[key].S ? timelineOutput[key].S : timelineOutput[key];
+        const patientData = timelineOutput[key].S
+          ? timelineOutput[key].S
+          : timelineOutput[key];
 
         const outputElectrode = handleImportedElectrode(electrodes);
         console.log('Patient Data: ', patientData);
         const processedS = patientData
-          ? gatherImportedDataNew(patientData, electrodes)
+          ? gatherImportedDataNew(
+              patientData,
+              electrodes,
+              stimulationData.runSettings,
+            )
           : {
               filteredQuantities: {},
               filteredValues: {},
               newTotalAmplitude: {},
               outputVisModel: '3',
               newAllVolAmpToggles: {},
+              newAllPercAmpToggles: {},
               outputIPG: handleIPG(electrodes),
               newAllTogglePositions: {},
+              allTemplateSpaces: launchTemplateSpace,
+              ossSettings: launchOSSSettings,
             };
 
         // Store the processed state for each patient
@@ -492,7 +542,11 @@ function Programmer() {
           allTotalAmplitudes: processedS.newTotalAmplitude,
           visModel: processedS.outputVisModel,
           allVolAmpToggles: processedS.newAllVolAmpToggles,
+          allPercAmpToggles: processedS.newAllPercAmpToggles,
           allTogglePositions: processedS.newAllTogglePositions,
+          allTemplateSpaces:
+            processedS.allTemplateSpaces ?? initialState.allTemplateSpaces,
+          ossSettings: processedS.ossSettings ?? initialState.ossSettings,
           model: electrodes,
         };
       });
@@ -502,20 +556,15 @@ function Programmer() {
 
     if (stimulationData.type === 'leaddbs') {
       // Iterate over each key in the timelineOutput object
-      let defaultElectrode = null;
+      let defaultElectrode = launchElectrodeModel(stimulationData, patient.id);
       Object.keys(timelineOutput).forEach((key, index) => {
         console.log(`Processing timeline for patient ${key}`);
         console.log('Timeline Output: ', timelineOutput);
-        let electrodes =
-          stimulationData.electrodeModels || 'Boston Vercise Directed';
-        if (stimulationData.filepath.includes('leadgroup')) {
-          const patientIndex = stimulationData.patientname.findIndex(
-            (name) => name === patient.id,
-          );
-          const electrodeModel = stimulationData.electrodeModels[patientIndex];
-          console.log('Electrode model: ', electrodeModel);
-          electrodes = electrodeModel;
-        }
+        const electrodes = launchElectrodeModel(
+          stimulationData,
+          patient.id,
+          index,
+        );
         defaultElectrode = electrodes;
         const currentTimeline = key;
         const patientData = timelineOutput[key].S;
@@ -523,15 +572,22 @@ function Programmer() {
         const outputElectrode = handleImportedElectrode(electrodes);
 
         const processedS = patientData
-          ? gatherImportedDataNew(patientData, electrodes)
+          ? gatherImportedDataNew(
+              patientData,
+              electrodes,
+              stimulationData.runSettings,
+            )
           : {
               filteredQuantities: {},
               filteredValues: {},
               newTotalAmplitude: {},
               outputVisModel: '3',
               newAllVolAmpToggles: {},
+              newAllPercAmpToggles: {},
               outputIPG: handleIPG(electrodes),
               newAllTogglePositions: {},
+              allTemplateSpaces: launchTemplateSpace,
+              ossSettings: launchOSSSettings,
             };
 
         // Store the processed state for each patient
@@ -545,7 +601,11 @@ function Programmer() {
           allTotalAmplitudes: processedS.newTotalAmplitude,
           visModel: processedS.outputVisModel,
           allVolAmpToggles: processedS.newAllVolAmpToggles,
+          allPercAmpToggles: processedS.newAllPercAmpToggles,
           allTogglePositions: processedS.newAllTogglePositions,
+          allTemplateSpaces:
+            processedS.allTemplateSpaces ?? initialState.allTemplateSpaces,
+          ossSettings: processedS.ossSettings ?? initialState.ossSettings,
           model: electrodes,
         };
       });
@@ -553,18 +613,25 @@ function Programmer() {
         const outputElectrode = handleImportedElectrode(defaultElectrode);
         const patientData = initializeS(
           timeline,
-          electrodeModels[outputElectrode].numel,
+          electrodeModelsSpecs[outputElectrode].numel,
         );
         const processedS = patientData
-          ? gatherImportedDataNew(patientData, defaultElectrode)
+          ? gatherImportedDataNew(
+              patientData,
+              defaultElectrode,
+              stimulationData.runSettings,
+            )
           : {
               filteredQuantities: {},
               filteredValues: {},
               newTotalAmplitude: {},
               outputVisModel: '3',
               newAllVolAmpToggles: {},
+              newAllPercAmpToggles: {},
               outputIPG: handleIPG(defaultElectrode),
               newAllTogglePositions: {},
+              allTemplateSpaces: launchTemplateSpace,
+              ossSettings: launchOSSSettings,
             };
         initialStates[timeline] = {
           ...initialState,
@@ -576,7 +643,11 @@ function Programmer() {
           allTotalAmplitudes: processedS.newTotalAmplitude,
           visModel: processedS.outputVisModel,
           allVolAmpToggles: processedS.newAllVolAmpToggles,
+          allPercAmpToggles: processedS.newAllPercAmpToggles,
           allTogglePositions: processedS.newAllTogglePositions,
+          allTemplateSpaces:
+            processedS.allTemplateSpaces ?? initialState.allTemplateSpaces,
+          ossSettings: processedS.ossSettings ?? initialState.ossSettings,
         };
       }
     } else if (stimulationData.type === 'leadgroup') {
@@ -585,21 +656,28 @@ function Programmer() {
         console.log('Timeline Output: ', timelineOutput);
         // Patient here is the timeline
         const currentTimeline = key;
-        const electrodes = stimulationData.electrodeModels[index];
+        const electrodes = launchElectrodeModel(stimulationData, key, index);
         const patientData = timelineOutput[key].S;
 
         const outputElectrode = handleImportedElectrode(electrodes);
 
         const processedS = patientData
-          ? gatherImportedDataNew(patientData, electrodes)
+          ? gatherImportedDataNew(
+              patientData,
+              electrodes,
+              stimulationData.runSettings,
+            )
           : {
               filteredQuantities: {},
               filteredValues: {},
               newTotalAmplitude: {},
               outputVisModel: '3',
               newAllVolAmpToggles: {},
+              newAllPercAmpToggles: {},
               outputIPG: handleIPG(electrodes),
               newAllTogglePositions: {},
+              allTemplateSpaces: launchTemplateSpace,
+              ossSettings: launchOSSSettings,
             };
 
         // Store the processed state for each patient
@@ -613,7 +691,11 @@ function Programmer() {
           allTotalAmplitudes: processedS.newTotalAmplitude,
           visModel: processedS.outputVisModel,
           allVolAmpToggles: processedS.newAllVolAmpToggles,
+          allPercAmpToggles: processedS.newAllPercAmpToggles,
           allTogglePositions: processedS.newAllTogglePositions,
+          allTemplateSpaces:
+            processedS.allTemplateSpaces ?? initialState.allTemplateSpaces,
+          ossSettings: processedS.ossSettings ?? initialState.ossSettings,
           model: electrodes,
         };
       });
@@ -700,8 +782,14 @@ function Programmer() {
           console.log('TEMPPatients: ', tmppatients);
           setPatients(tmppatients);
         } else if (stimulationData.type === 'leadgroup') {
-          const patientIds = allPatients.patients.map((patient) => patient.id);
+          const patientIds = launchPatientIds(stimulationData);
           console.log('Patient IDs: ', patientIds);
+
+          if (patientIds.length === 0) {
+            throw new Error(
+              'The Lead-Group launch request does not contain any patients.',
+            );
+          }
 
           console.log("Stimulation data type is not 'leaddbs'. Skipping...");
           const timelineResults = await Promise.all(
@@ -747,7 +835,7 @@ function Programmer() {
     };
 
     fetchData();
-  }, [directoryPath, patient, leadDBS, allPatients]);
+  }, [directoryPath, patient, leadDBS]);
 
   const handleZoomChange = (event: any, newValue: number) => {
     setZoomLevel(newValue);
@@ -777,6 +865,12 @@ function Programmer() {
 
   const calculatePercentageFromAmplitude = (quantities, totalAmplitude) => {
     const updatedQuantities = { ...quantities };
+    if (!Number.isFinite(totalAmplitude) || totalAmplitude <= 0) {
+      Object.keys(updatedQuantities).forEach((element) => {
+        updatedQuantities[element] = 0;
+      });
+      return updatedQuantities;
+    }
     Object.keys(updatedQuantities).forEach((element) => {
       updatedQuantities[element] =
         (parseFloat(updatedQuantities[element]) * 100) / totalAmplitude;
@@ -799,47 +893,20 @@ function Programmer() {
     allQuantities,
     allTotalAmplitudes,
     allTogglePositions,
+    allSelectedValues,
+    IPG,
+    allPercAmpToggles,
+    allVolAmpToggles,
   ) => {
-    let outputQuantities = {};
-    console.log(allQuantities);
-    console.log(allTotalAmplitudes);
-    console.log(allTogglePositions);
-    const updatedQuantities = { ...allQuantities };
-    Object.keys(allTogglePositions).forEach((position) => {
-      // allTogglePositions[position] = 'mA';
-      if (allTogglePositions[position] === 'mA') {
-        console.log('position', position);
-        console.log('quantity: ', allTogglePositions);
-        console.log(allTotalAmplitudes[position]);
-        console.log(allQuantities[position]);
-        outputQuantities = calculatePercentageFromAmplitude(
-          allQuantities[position],
-          parseFloat(allTotalAmplitudes[position]),
-        );
-        // const updatedQuantities = {
-        //   ...allQuantities,
-        //   [position]: outputQuantities,
-        // };
-        updatedQuantities[position] = outputQuantities;
-        console.log('updaredQuantities: ', updatedQuantities);
-        outputQuantities = updatedQuantities;
-      } else if (allTogglePositions[position] === 'V') {
-        outputQuantities = calculateVoltageFromAmplitude(
-          allQuantities[position],
-        );
-        // const updatedQuantities = {
-        //   ...allQuantities,
-        //   [position]: outputQuantities,
-        // };
-        updatedQuantities[position] = outputQuantities;
-        outputQuantities = updatedQuantities;
-      } else {
-        outputQuantities[position] = allQuantities[position];
-      }
-      // return '';
-    });
-    // console.log(updatedQuantities);
-  return outputQuantities;
+    return exportSteeringQuantities(
+      allQuantities,
+      allTotalAmplitudes,
+      allTogglePositions,
+      allSelectedValues,
+      IPG,
+      allPercAmpToggles,
+      allVolAmpToggles,
+    );
   };
 
   const translatePolarity = (sideValue) => {
@@ -872,8 +939,11 @@ function Programmer() {
     visModel,
     allTogglePositions,
     allPercAmpToggles,
+    allVolAmpToggles,
     index,
     allTemplateSpaces,
+    patientId,
+    ossSettings,
   ) => {
     // handleFileChange('1');
     // saveQuantitiesandValues();
@@ -882,6 +952,10 @@ function Programmer() {
       allQuantities,
       allTotalAmplitudes,
       allTogglePositions,
+      allSelectedValues,
+      IPG,
+      allPercAmpToggles,
+      allVolAmpToggles,
     );
     console.log('Updated output quantity: ', updatedOutputQuantity);
     // parseAllVariables();
@@ -890,11 +964,18 @@ function Programmer() {
     const leftHemiArr = [];
     const rightHemiArr = [];
     console.log(importNewS);
+    const indexedStimulation = Array.isArray(totalS)
+      ? totalS[index]
+      : patientId && totalS?.[patientId]
+      ? totalS[patientId]
+      : totalS;
     const data = {
-      S: {
-        ...totalS[index],
-      },
+      S: JSON.parse(
+        JSON.stringify(indexedStimulation?.S || indexedStimulation || {}),
+      ),
     };
+    data.S.amplitude = [Array(4).fill(0), Array(4).fill(0)];
+    data.S.activecontacts = {};
     console.log('Data: ', data);
 
     const programs = Object.keys(allQuantities);
@@ -902,7 +983,16 @@ function Programmer() {
     console.log('Programs: ', programs);
     console.log('length', programs[0]);
 
-    const loopSize = Object.keys(allQuantities[firstProgram]).length;
+    const configuredContactCount = Math.max(
+      Number(electrodeModelsSpecs[selectedElectrodeLeft]?.numel) || 0,
+      Number(electrodeModelsSpecs[selectedElectrodeRight]?.numel) || 0,
+    );
+    const loopSize =
+      (configuredContactCount ||
+        Math.max(
+          0,
+          Object.keys(allQuantities[firstProgram] || {}).length - 1,
+        )) + 1;
     // console.log('loopSize: ', loopSize);
     // data.S.label = 'Num1';
     const activeArray = [];
@@ -910,6 +1000,7 @@ function Programmer() {
 
     for (let j = 1; j < 5; j++) {
       const dynamicKey2 = `Ls${j}`;
+      data.S[dynamicKey2] = withoutStimulationContacts(data.S[dynamicKey2]);
       if (allSelectedValues[j] && updatedOutputQuantity[j]) {
         // Need to change the i = 9 to number of electrodes to accomodate for 16 contact electrodes
         for (let i = 1; i < loopSize; i++) {
@@ -923,13 +1014,13 @@ function Programmer() {
           }
           const dynamicKey = `k${i}`;
           data.S[dynamicKey2][dynamicKey] = {
-            perc: parseFloat(updatedOutputQuantity[j][i]),
+            perc: Number(updatedOutputQuantity[j][i] ?? 0),
             pol: polarity,
             imp: 1,
           };
         }
         data.S[dynamicKey2].case = {
-          perc: parseFloat(updatedOutputQuantity[j][0]),
+          perc: Number(updatedOutputQuantity[j][0] ?? 0),
           pol: translatePolarity(allSelectedValues[j][0]),
         };
         data.S[dynamicKey2].amp = parseFloat(allTotalAmplitudes[j]);
@@ -940,7 +1031,14 @@ function Programmer() {
         //   allStimulationParameters[j].parameter1,
         // );
         data.S[dynamicKey2].va = 2;
-        if (allTogglePositions[j] === 'V') {
+        if (
+          getSteeringUnit(
+            IPG,
+            allPercAmpToggles[j],
+            allVolAmpToggles[j],
+            allTogglePositions[j],
+          ) === 'V'
+        ) {
           data.S[dynamicKey2].va = 1;
         }
         activeArray.push(j);
@@ -974,6 +1072,7 @@ function Programmer() {
 
     for (let j = 1; j < 5; j++) {
       const dynamicKey2 = `Rs${j}`;
+      data.S[dynamicKey2] = withoutStimulationContacts(data.S[dynamicKey2]);
       if (allSelectedValues[j + 4] && updatedOutputQuantity[j + 4]) {
         for (let i = 1; i < loopSize; i++) {
           let polarity = 0;
@@ -986,13 +1085,13 @@ function Programmer() {
           }
           const dynamicKey = `k${i}`;
           data.S[dynamicKey2][dynamicKey] = {
-            perc: parseFloat(updatedOutputQuantity[j + 4][i]),
+            perc: Number(updatedOutputQuantity[j + 4][i] ?? 0),
             pol: polarity,
             imp: 1,
           };
         }
         data.S[dynamicKey2].case = {
-          perc: parseFloat(updatedOutputQuantity[j + 4][0]),
+          perc: Number(updatedOutputQuantity[j + 4][0] ?? 0),
           pol: translatePolarity(allSelectedValues[j + 4][0]),
         };
         data.S[dynamicKey2].amp = parseFloat(allTotalAmplitudes[j + 4]);
@@ -1003,7 +1102,14 @@ function Programmer() {
         //   allStimulationParameters[j + 4].parameter1,
         // );
         data.S[dynamicKey2].va = 2;
-        if (allTogglePositions[j + 4] === 'V') {
+        if (
+          getSteeringUnit(
+            IPG,
+            allPercAmpToggles[j + 4],
+            allVolAmpToggles[j + 4],
+            allTogglePositions[j + 4],
+          ) === 'V'
+        ) {
           data.S[dynamicKey2].va = 1;
         }
         activeArray.push(j + 4);
@@ -1057,9 +1163,10 @@ function Programmer() {
     // data.S.amplitude = { rightAmplitude, leftAmplitude };
     // data.S.amplitude = exportAmplitudeData;
     // console.log(exportAmplitudeData);
-    const sourcesArray = activeArray;
     const rightLength = newActiveArray.length;
-    data.S.sources = sourcesArray;
+    // Lead-DBS numbers sources independently within each hemisphere (Ls1-4
+    // and Rs1-4). UI program slots 5-8 must never leak into S.sources.
+    data.S.sources = [...LEAD_DBS_SOURCE_INDICES];
     // data.S.active = [leftLength, rightLength];
     data.S.active = [1, 1];
     // data.S.activecontacts = activeContacts(allSelectedValues[1]);
@@ -1098,6 +1205,7 @@ function Programmer() {
     // console.log('export vis model', exportVisModel);
     data.S.model = exportVisModel;
     data.S.estimateInTemplate = allTemplateSpaces;
+    data.S.ossSettings = normalizeOSSSettings(ossSettings);
     const leftSideContacts = Object.values(data.S.activecontacts).slice(0, 4);
     const rightSideContacts = Object.values(data.S.activecontacts).slice(4, 8);
 
@@ -1111,6 +1219,15 @@ function Programmer() {
     const combinedRightContacts = combineBinary(rightSideContacts);
 
     data.S.activecontacts = [combinedRightContacts, combinedLeftContacts];
+    writeSteeringMetadata(
+      data.S,
+      IPG,
+      allQuantities,
+      allTotalAmplitudes,
+      allTogglePositions,
+      allPercAmpToggles,
+      allVolAmpToggles,
+    );
 
     // if (Array.isArray(data.S.activecontacts) && data.S.activecontacts.length > 0 && data.S.activecontacts[0] === undefined) {
     //   data.S.activecontacts.shift();
@@ -1119,14 +1236,25 @@ function Programmer() {
     return data;
   };
 
-
-  const handleExport = () => {
+  const handleExport = async () => {
     console.log('Patient States for Export', patientStates);
     const outputData = [];
+    setSaveError('');
+    setSaveInProgress(true);
     try {
-      Object.values(patientStates).forEach((tempStates, index) => {
+      const orderedPatientIds = patients.filter((patientId) =>
+        Object.prototype.hasOwnProperty.call(patientStates, patientId),
+      );
+      if (orderedPatientIds.length !== patients.length) {
+        throw new Error(
+          'One or more patients are missing stimulation state. Reopen SPARK and try again.',
+        );
+      }
+
+      orderedPatientIds.forEach((patientId, index) => {
+        const tempStates = patientStates[patientId];
         console.log('TempStates: ', tempStates);
-        const tempData = gatherExportedData5(
+        const tempData: any = gatherExportedData5(
           tempStates.allTotalAmplitudes,
           tempStates.allQuantities,
           tempStates.allSelectedValues,
@@ -1136,23 +1264,32 @@ function Programmer() {
           tempStates.visModel,
           tempStates.allTogglePositions,
           tempStates.allPercAmpToggles,
+          tempStates.allVolAmpToggles,
           index,
           tempStates.allTemplateSpaces,
+          patientId,
+          tempStates.ossSettings,
         );
-        outputData[index] = tempData; // Using index instead of key
+        tempData.subjectId = patientId;
+        tempData.patientname = patientId;
+        outputData[index] = tempData;
       });
-    } catch (err) {
-      console.log(err);
-    }
 
-    console.log('Output Data: ', outputData);
-    const filePath = '';
-    window.electron.ipcRenderer.sendMessage(
-      'save-file-stimulate',
-      '',
-      outputData,
-    );
-    window.electron.ipcRenderer.sendMessage('close-window');
+      console.log('Output Data: ', outputData);
+      const result = await window.electron.ipcRenderer.invoke(
+        'save-file-stimulate',
+        '',
+        outputData,
+      );
+      if (!result?.success) {
+        throw new Error('The stimulation parameters could not be saved.');
+      }
+      window.electron.ipcRenderer.sendMessage('close-window');
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaveInProgress(false);
+    }
   };
 
   return (
@@ -1184,39 +1321,44 @@ function Programmer() {
         )}
       </div>
       {mode !== 'stimulate' && (
-        <div
-          style={{ marginTop: '-120px' }}
+        <button
+          className="export-button"
+          style={{
+            position: 'fixed',
+            top: '100px',
+            left: '16px',
+            zIndex: 100,
+            width: '60px',
+            boxShadow: '0 4px 8px rgba(0, 0, 0, 0.4)',
+            backgroundColor: 'white',
+            color: 'black',
+            borderRadius: '30px',
+            padding: '8px 16px',
+            fontSize: '16px',
+            fontWeight: 'bold',
+            border: 'none',
+          }}
+          onClick={() => navigate(-1)}
+          title="Back to Patient Details"
         >
-          <button
-            className="export-button"
-            style={{
-              marginTop: '65px',
-              marginLeft: '-200px',
-              width: '100px',
-              boxShadow: '0 4px 8px rgba(0, 0, 0, 0.4)',
-              backgroundColor: 'white',
-              color: 'black',
-              borderRadius: '30px',
-              padding: '10px 20px',
-              fontSize: '16px',
-              fontWeight: 'bold',
-            }}
-            onClick={() => navigate(-1)}
-          >
-            {/* Back to Patient Details */}
-            ←
-          </button>
-        </div>
+          ←
+        </button>
       )}
       {type === 'leadgroup' && (
         <div>
+          {saveError && (
+            <div role="alert" style={{ color: '#b00020', marginBottom: '8px' }}>
+              {saveError}
+            </div>
+          )}
           <button
             // className="export-button-final"
             onClick={handleExport}
+            disabled={saveInProgress}
             // style={{ marginLeft: '1200px' }}
             style={{
               width: '200px',
-              marginLeft: '-125px',
+              marginLeft: '20px',
               boxShadow: '0 4px 8px rgba(0, 0, 0, 0.4)',
               backgroundColor: 'green',
               color: 'white',
@@ -1227,7 +1369,7 @@ function Programmer() {
               border: 'none',
             }}
           >
-            Save and Close
+            {saveInProgress ? 'Saving…' : 'Save and Close'}
           </button>
         </div>
       )}

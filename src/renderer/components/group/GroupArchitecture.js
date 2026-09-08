@@ -14,6 +14,7 @@ import Navbar from '../common/Navbar';
 import { Modal } from 'react-bootstrap';
 import EditIcon from '@mui/icons-material/Edit';
 import DriveFileRenameOutlineIcon from '@mui/icons-material/DriveFileRenameOutline';
+import { normalizeOSSSettings } from '../../utils/OSSSettings';
 
 // import './electrode_models/currentModels/ElecModelStyling/boston_vercise_directed.css';
 
@@ -65,6 +66,8 @@ function GroupArchitecture({
     showDropdown: true,
     filePath: '',
     stimChanged: true,
+    allTemplateSpaces: 0,
+    ossSettings: normalizeOSSSettings(),
   };
 
   const [renderKey, setRenderKey] = useState(0); // Added state for forcing re-render
@@ -89,13 +92,16 @@ function GroupArchitecture({
   }, [selectedPatient, patientStates]);
 
   const handleStateChange = (patient, stateUpdater) => {
-    setPatientStates((prevStates) => ({
-      ...prevStates,
-      [patient]: {
-        ...prevStates[patient],
-        ...stateUpdater,
-      },
-    }));
+    setPatientStates((prevStates) => {
+      const previous = prevStates[patient] || initialState;
+      const changes = Object.fromEntries(
+        Object.entries(stateUpdater).map(([field, value]) => [
+          field,
+          typeof value === 'function' ? value(previous[field]) : value,
+        ]),
+      );
+      return { ...prevStates, [patient]: { ...previous, ...changes } };
+    });
   };
 
   const [zoomLevel, setZoomLevel] = useState(-3);
@@ -258,8 +264,6 @@ function GroupArchitecture({
     }
   }, [patientInfo, selectedPatient, renderKey]);
 
-
-
   const handleEditPatients = () => {
     setShowEditModal(true);
   };
@@ -277,7 +281,8 @@ function GroupArchitecture({
     // Update the patientStates object
     const updatedPatientStates = { ...patientStates };
     if (selectedPatient in updatedPatientStates) {
-      updatedPatientStates[newPatientName] = updatedPatientStates[selectedPatient];
+      updatedPatientStates[newPatientName] =
+        updatedPatientStates[selectedPatient];
       delete updatedPatientStates[selectedPatient];
     }
 
@@ -297,7 +302,7 @@ function GroupArchitecture({
     // Copy the state of the existing patient to the new patient
     const updatedPatientStates = {
       ...patientStates,
-      [newPatientName]: { ...patientStates[selectedPatient]},
+      [newPatientName]: { ...patientStates[selectedPatient] },
     };
     importNewS.label = newPatientName;
 
@@ -309,7 +314,7 @@ function GroupArchitecture({
   };
 
   return (
-    <div style={{ marginLeft: '-300px', marginTop: '200px' }}>
+    <div style={{ marginTop: '140px', paddingLeft: '20px' }}>
       {patientInfo && selectedPatient && navbardata && (
         // <Navbar
         //   text={
@@ -531,12 +536,20 @@ function GroupArchitecture({
             setAllTemplateSpaces={(value) =>
               handleStateChange(selectedPatient, { allTemplateSpaces: value })
             }
+            ossSettings={currentPatientState.ossSettings}
+            setOSSSettings={(value) =>
+              handleStateChange(selectedPatient, { ossSettings: value })
+            }
             showViewer={showViewer}
             setShowViewer={setShowViewer}
           />
         )}
       </div>
-      <Modal show={showEditModal} onHide={handleModalClose} style={{ marginTop: '200px' }}>
+      <Modal
+        show={showEditModal}
+        onHide={handleModalClose}
+        style={{ marginTop: '200px' }}
+      >
         <Modal.Header closeButton>
           <Modal.Title>Edit Stimulation ID</Modal.Title>
         </Modal.Header>
