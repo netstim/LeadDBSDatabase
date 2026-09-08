@@ -1,0 +1,426 @@
+{
+  "S": {
+    "label": "Baseline",
+    "Rs1": {
+      "case": {
+        "perc": 100,
+        "pol": 2
+      },
+      "amp": 2.5,
+      "va": 2,
+      "pulseWidth": 60,
+      "k1": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k2": {
+        "perc": 100,
+        "pol": 1,
+        "imp": 1
+      },
+      "k3": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k4": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k5": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k6": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k7": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k8": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      }
+    },
+    "Ls1": {
+      "case": {
+        "perc": 100,
+        "pol": 2
+      },
+      "amp": 1.8,
+      "va": 2,
+      "pulseWidth": 60,
+      "k1": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k2": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k3": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k4": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k5": {
+        "perc": 60,
+        "pol": 1,
+        "imp": 1
+      },
+      "k6": {
+        "perc": 40,
+        "pol": 1,
+        "imp": 1
+      },
+      "k7": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k8": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      }
+    },
+    "Rs2": {
+      "case": {
+        "perc": 100,
+        "pol": 2
+      },
+      "amp": 0,
+      "va": 2,
+      "pulseWidth": 60,
+      "k1": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k2": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k3": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k4": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k5": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k6": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k7": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k8": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      }
+    },
+    "Ls2": {
+      "case": {
+        "perc": 100,
+        "pol": 2
+      },
+      "amp": 0,
+      "va": 2,
+      "pulseWidth": 60,
+      "k1": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k2": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k3": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k4": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k5": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k6": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k7": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k8": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      }
+    },
+    "Rs3": {
+      "case": {
+        "perc": 100,
+        "pol": 2
+      },
+      "amp": 0,
+      "va": 2,
+      "pulseWidth": 60,
+      "k1": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k2": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k3": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k4": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k5": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k6": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k7": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k8": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      }
+    },
+    "Ls3": {
+      "case": {
+        "perc": 100,
+        "pol": 2
+      },
+      "amp": 0,
+      "va": 2,
+      "pulseWidth": 60,
+      "k1": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k2": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k3": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k4": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k5": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k6": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k7": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k8": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      }
+    },
+    "Rs4": {
+      "case": {
+        "perc": 100,
+        "pol": 2
+      },
+      "amp": 0,
+      "va": 2,
+      "pulseWidth": 60,
+      "k1": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k2": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k3": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k4": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k5": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k6": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k7": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k8": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      }
+    },
+    "Ls4": {
+      "case": {
+        "perc": 100,
+        "pol": 2
+      },
+      "amp": 0,
+      "va": 2,
+      "pulseWidth": 60,
+      "k1": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k2": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k3": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k4": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k5": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k6": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k7": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      },
+      "k8": {
+        "perc": 0,
+        "pol": 0,
+        "imp": 1
+      }
+    },
+    "active": [
+      1,
+      1
+    ],
+    "model": "SimBio/FieldTrip (see Horn 2017)",
+    "monopolarmodel": 0,
+    "amplitude": [
+      [
+        2.5,
+        0,
+        0,
+        0
+      ],
+      [
+        1.8,
+        0,
+        0,
+        0
+      ]
+    ],
+    "numContacts": 8,
+    "sources": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "volume": [],
+    "ver": "2.0"
+  }
+}

@@ -2,6 +2,7 @@ import * as nifti from 'nifti-reader-js';
 import * as iso from 'isosurface';
 import * as THREE from 'three';
 import * as math from 'mathjs';
+import { taubinSmoothPositions } from './meshSmoothing';
 // import * as grayscaleColormap from 'grayscale-colormap';
 
 function typedArrayFor(code) {
@@ -80,31 +81,38 @@ function gaussianSmooth(vox, nx, ny, nz, sigma = 1.0) {
   return smoothVox;
 }
 
-function nii2Mesh(raw) {
-  const header = nifti.readHeader(raw);
-  const image = nifti.readImage(header, raw);
-  console.log('NII2MESH: ', header);
+function nii2Mesh(raw, options = {}) {
+  if (!(raw instanceof ArrayBuffer)) {
+    throw new Error('NIfTI data must be provided as an ArrayBuffer.');
+  }
+  const niftiData = nifti.isCompressed(raw) ? nifti.decompress(raw) : raw;
+  if (!nifti.isNIFTI(niftiData)) {
+    throw new Error('File is not a valid NIfTI-1 or NIfTI-2 volume.');
+  }
+
+  const header = nifti.readHeader(niftiData);
+  const image = nifti.readImage(header, niftiData);
   const Typed = typedArrayFor(header.datatypeCode);
   let vox = new Typed(image);
-  console.log(vox);
   const float32Array = new Float32Array(vox.length);
+  const slope =
+    Number.isFinite(header.scl_slope) && header.scl_slope !== 0
+      ? header.scl_slope
+      : 1;
+  const intercept = Number.isFinite(header.scl_inter) ? header.scl_inter : 0;
   for (let i = 0; i < vox.length; i++) {
-    float32Array[i] = vox[i];
+    float32Array[i] = vox[i] * slope + intercept;
   }
   vox = float32Array;
   const [nx, ny, nz] = header.dims.slice(1, 4);
 
-  // vox = gaussianSmooth(vox, nx, ny, nz);
-
-  const isoLevel = 0.5;
+  const isoLevel = Number.isFinite(options.isoLevel) ? options.isoLevel : 0.5;
   const scalar = (x, y, z) => vox[x + nx * (y + ny * z)] - isoLevel;
   const mesh = iso.marchingCubes([nx, ny, nz], scalar);
 
   if (mesh.positions.length === 0) {
     throw new Error('No voxels ≥ isoLevel – check datatype / isoLevel.');
   }
-
-  // Apply Gaussian smoothing
 
   // --- scale vertices using affine matrix ---------------------------------
   const affineMatrix = header.affine; // Assuming affine matrix is available
@@ -113,6 +121,19 @@ function nii2Mesh(raw) {
     const transformedVoxels = math.multiply(affineMatrix, voxelHomogeneous);
     return transformedVoxels.slice(0, 3); // Return only x, y, z
   });
+
+  const smoothingIterations = Number.isFinite(options.smoothingIterations)
+    ? Math.max(0, Math.floor(options.smoothingIterations))
+    : 5;
+  if (smoothingIterations > 0) {
+    mesh.positions = taubinSmoothPositions(mesh.positions, mesh.cells, {
+      iterations: smoothingIterations,
+      lambda: options.smoothingLambda,
+      mu: options.smoothingMu,
+      preserveBoundary: options.preserveBoundary ?? true,
+      preserveCentroid: true,
+    });
+  }
 
   // --- Three.js geometry ---------------------------------------------------
   // const geo = new BufferGeometry();
@@ -139,8 +160,10 @@ function nii2Mesh(raw) {
   }
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
 
-  // Compute vertex normals
+  // Recompute normals after smoothing so lighting follows the new surface.
   geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
 
   // Set vertex colors
   const colors = new Float32Array(positions.length);
@@ -153,10 +176,11 @@ function nii2Mesh(raw) {
 
   const material = new THREE.MeshStandardMaterial({
     color: 'red',
-    shininess: 100, // Increase shininess for a smoother appearance
-    specular: 0x111111, // Specular color for highlights
+    metalness: 0.05,
+    roughness: 0.45,
     transparent: true,
     opacity: 0.8,
+    side: THREE.DoubleSide,
   });
 
   return { geometry, material };
@@ -315,32 +339,43 @@ function buildSliceTexture(
 }
 
 function buildSliceMesh(
-  voxelList,           // Float32Array OR Array<[x,y,z,r]>
-  affine,              // Float32Array(16) 4×4, row-major
-  dims,                // [nx,ny,nz]
-  axis    = 2,         // 0=sag, 1=cor, 2=ax
-  planeMM = 0
+  voxelList, // Float32Array OR Array<[x,y,z,r]>
+  affine, // Float32Array(16) 4×4, row-major
+  dims, // [nx,ny,nz]
+  axis = 2, // 0=sag, 1=cor, 2=ax
+  planeMM = 0,
 ) {
   const [nx, ny, nz] = dims;
   const half = [nx / 2, ny / 2, nz / 2];
 
-  const width  = axis === 2 ? nx : (axis === 1 ? nx : ny);
+  const width = axis === 2 ? nx : axis === 1 ? nx : ny;
   const height = axis === 2 ? ny : nz;
-  const depth = axis === 2 ? nz : (axis === 1 ? ny : nx);
+  const depth = axis === 2 ? nz : axis === 1 ? ny : nx;
   const buf = new Uint8Array(width * height * depth); // 3D buffer
 
   // Cache affine into locals for JIT speed
   const m = affine;
-  const m00 = m[0], m01 = m[1], m02 = m[2],  m03 = m[3],
-        m10 = m[4], m11 = m[5], m12 = m[6],  m13 = m[7],
-        m20 = m[8], m21 = m[9], m22 = m[10], m23 = m[11];
+  const m00 = m[0],
+    m01 = m[1],
+    m02 = m[2],
+    m03 = m[3],
+    m10 = m[4],
+    m11 = m[5],
+    m12 = m[6],
+    m13 = m[7],
+    m20 = m[8],
+    m21 = m[9],
+    m22 = m[10],
+    m23 = m[11];
 
   const wanted = Math.round(planeMM);
 
   // Iterate over voxelList
   if (voxelList instanceof Float32Array) {
     for (let i = 0; i < voxelList.length; i += 4) {
-      const xV = voxelList[i], yV = voxelList[i + 1], zV = voxelList[i + 2];
+      const xV = voxelList[i],
+        yV = voxelList[i + 1],
+        zV = voxelList[i + 2];
       const r = voxelList[i + 3];
 
       const X = m00 * xV + m01 * yV + m02 * zV + m03;
@@ -351,13 +386,20 @@ function buildSliceMesh(
       if (Math.round(ax) !== wanted) continue;
 
       let xi, yi;
-      if (axis === 2) { xi = Math.round(X + half[0]); yi = Math.round(Y + half[1]); }
-      else if (axis === 1) { xi = Math.round(X + half[0]); yi = Math.round(Z + half[2]); }
-      else { xi = Math.round(Y + half[1]); yi = Math.round(Z + half[2]); }
+      if (axis === 2) {
+        xi = Math.round(X + half[0]);
+        yi = Math.round(Y + half[1]);
+      } else if (axis === 1) {
+        xi = Math.round(X + half[0]);
+        yi = Math.round(Z + half[2]);
+      } else {
+        xi = Math.round(Y + half[1]);
+        yi = Math.round(Z + half[2]);
+      }
 
       if (xi < 0 || xi >= width || yi < 0 || yi >= height) continue;
       const idx = xi + yi * width;
-      const val = r * 255 | 0;
+      const val = (r * 255) | 0;
       if (val > buf[idx]) buf[idx] = val;
     }
   } else {
@@ -372,13 +414,20 @@ function buildSliceMesh(
       if (Math.round(ax) !== wanted) continue;
 
       let xi, yi;
-      if (axis === 2) { xi = Math.round(X + half[0]); yi = Math.round(Y + half[1]); }
-      else if (axis === 1) { xi = Math.round(X + half[0]); yi = Math.round(Z + half[2]); }
-      else { xi = Math.round(Y + half[1]); yi = Math.round(Z + half[2]); }
+      if (axis === 2) {
+        xi = Math.round(X + half[0]);
+        yi = Math.round(Y + half[1]);
+      } else if (axis === 1) {
+        xi = Math.round(X + half[0]);
+        yi = Math.round(Z + half[2]);
+      } else {
+        xi = Math.round(Y + half[1]);
+        yi = Math.round(Z + half[2]);
+      }
 
       if (xi < 0 || xi >= width || yi < 0 || yi >= height) continue;
       const idx = xi + yi * width;
-      const val = r * 255 | 0;
+      const val = (r * 255) | 0;
       if (val > buf[idx]) buf[idx] = val;
     }
   }
@@ -390,7 +439,7 @@ function buildSliceMesh(
     height,
     depth,
     THREE.RedFormat,
-    THREE.UnsignedByteType
+    THREE.UnsignedByteType,
   );
   tex.minFilter = tex.magFilter = THREE.NearestFilter;
   tex.needsUpdate = true;
@@ -402,7 +451,7 @@ function buildSliceMesh(
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       uTex: { value: tex },
-      uSlice: { value: 0 } // Uniform to select the slice
+      uSlice: { value: 0 }, // Uniform to select the slice
     },
     vertexShader: `
       varying vec2 vUv;
@@ -419,7 +468,7 @@ function buildSliceMesh(
         vec4 color = texture(uTex, vec3(vUv, uSlice));
         gl_FragColor = color;
       }
-    `
+    `,
   });
 
   // Create the mesh
@@ -491,11 +540,11 @@ function makeAxialSliceTexture(mni, dims, zMM) {
 
 function addSliceTest(header, voxelCoordinates, scene) {
   const sliceMesh = buildSliceMesh(
-    voxelCoordinates,            // your raw voxel cloud
-    header.affine,               // 4×4 affine from the NIfTI
-    header.dims.slice(1, 4),     // [nx, ny, nz]
-    2,                            // axis 2 = axial
-    +0                           // show the +20 mm plane
+    voxelCoordinates, // your raw voxel cloud
+    header.affine, // 4×4 affine from the NIfTI
+    header.dims.slice(1, 4), // [nx, ny, nz]
+    2, // axis 2 = axial
+    +0, // show the +20 mm plane
   );
 
   // scene.add(sliceMesh);
@@ -672,7 +721,6 @@ function addSlice(header) {
   // Create the mesh
   const mesh = new THREE.Mesh(geometry, material);
 
-
   return mesh;
 }
 
@@ -802,7 +850,14 @@ function addSliceToSceneNew(raw, scene) {
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
   const meanValue = values.reduce((acc, val) => acc + val, 0) / values.length;
-  console.log('Max Value: ', maxValue, 'Mean Value: ', meanValue, 'Min Value: ', minValue);
+  console.log(
+    'Max Value: ',
+    maxValue,
+    'Mean Value: ',
+    meanValue,
+    'Min Value: ',
+    minValue,
+  );
   console.log('Plot Coordinates: ', plotCoords);
 
   const depth = nz; // Number of slices
@@ -838,7 +893,7 @@ function addSliceToSceneNew(raw, scene) {
   const material = new THREE.ShaderMaterial({
     uniforms: {
       uTex: { value: texture },
-      uSlice: { value: 0 } // Uniform to select the slice
+      uSlice: { value: 0 }, // Uniform to select the slice
     },
     side: THREE.DoubleSide,
     vertexShader: `
@@ -856,7 +911,7 @@ function addSliceToSceneNew(raw, scene) {
         vec4 color = texture(uTex, vec3(vUv, uSlice));
         gl_FragColor = color;
       }
-    `
+    `,
   });
 
   // Create the mesh
@@ -903,11 +958,10 @@ function testPlane(scene) {
 
   // Set the position of the plane in 3D space
   mesh.position.set(0, 0, -10); // Adjust the x, y, z values as needed
-    // mesh.position.z -= 100; // Adjust the value as needed to move the plane down
+  // mesh.position.z -= 100; // Adjust the value as needed to move the plane down
   console.log('Mesh: ', mesh);
   scene.add(mesh);
   return mesh;
 }
 
 export { nii2Mesh, processNifti, testPlane, addSliceToSceneNew };
-

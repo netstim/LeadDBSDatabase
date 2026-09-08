@@ -15,7 +15,6 @@ import * as nifti from 'nifti-reader-js';
 import { getTypedArray } from 'nifti-reader-js';
 import * as iso from 'isosurface';
 import ndarray from 'ndarray';
-import * as fflate from 'fflate';
 
 // UI Components
 import {
@@ -39,44 +38,140 @@ import LockOpenIcon from '@mui/icons-material/LockOpen';
 import * as math from 'mathjs';
 
 // Local Components and Utils
-import { optimizeSphereValues, projectNumContacts } from '../stimulation/StimOptimizer';
+import {
+  optimizeSphereValues,
+  projectNumContacts,
+} from '../stimulation/StimOptimizer';
 import { computeSuperimposedEField } from '../../utils/OssDbsStimsets';
-import { nii2Mesh, processNifti, testPlane, addSliceToSceneNew } from '../../utils/NiftiUtils';
-
-// Assets
-import EdlowBrain from '../../assets/images/Edlow_10mm.png';
+import {
+  nii2Mesh,
+  processNifti,
+  testPlane,
+  addSliceToSceneNew,
+} from '../../utils/NiftiUtils';
+import {
+  createFallbackElectrodeGeometry,
+  extractFallbackElectrodeData,
+  getFallbackElectrodeBounds,
+  parseElectrodePlyGeometry,
+} from '../../utils/electrodeFallbackGeometry';
+import type { SteeringUnit } from '../../utils/currentSteering';
+import { niftiValuesToViewerProgram } from '../../utils/viewerProgram';
+import { createLeadAxisCameraPose } from '../../utils/leadAxisCamera';
 
 // Type definitions
 interface PlyViewerProps {
   quantities: Record<string, any>;
-  setQuantities: (value: Record<string, any>) => void;
   selectedValues: Record<string, any>;
-  setSelectedValues: (value: Record<string, any>) => void;
   amplitude: number;
-  setAmplitude: (value: number) => void;
   side: string;
   historical: any;
-  togglePosition: string;
+  steeringUnit: SteeringUnit;
+  onProgramChange: (
+    quantities: Record<string, number>,
+    selectedValues: Record<string, string>,
+    amplitude: number,
+  ) => void;
   tab: string;
   names: string[];
   elspec: any;
 }
 
+type ElectrodeGeometryStatus = 'loading' | 'ply' | 'fallback' | 'empty';
+
+const reconstructionWithCoordinateAliases = (value: unknown): any => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return value;
+  }
+  const reconstruction = value as Record<string, any>;
+  return {
+    ...reconstruction,
+    coords_right: reconstruction.coords_right ?? reconstruction.coords1,
+    coords_left: reconstruction.coords_left ?? reconstruction.coords2,
+  };
+};
+
+const disposeSceneObject = (object: THREE.Object3D) => {
+  object.traverse((child: any) => {
+    child.geometry?.dispose?.();
+    if (Array.isArray(child.material)) {
+      child.material.forEach((material: THREE.Material) => material.dispose());
+    } else {
+      child.material?.dispose?.();
+    }
+  });
+};
+
+// Names used for the lead itself; these meshes cannot be removed/recolored
+// from the mesh list because stimulation rendering depends on them.
+const ELECTRODE_MESH_NAMES = new Set([
+  'Electrode Scene',
+  'Generic electrode model',
+]);
+
+// Distinguishable default colors assigned to dropped NIfTI overlays in order.
+const OVERLAY_COLOR_PALETTE = [
+  '#e05c4b',
+  '#4b9fe0',
+  '#57c46b',
+  '#e0a54b',
+  '#a06be0',
+  '#4bd2c8',
+  '#e05c9f',
+  '#c8d24b',
+];
+
+const BACKGROUND_PRESETS = [
+  { label: 'Black', value: '#000000' },
+  { label: 'Charcoal', value: '#22272e' },
+  { label: 'Slate', value: '#2c3e50' },
+  { label: 'White', value: '#ffffff' },
+];
+
+// Standard anatomical camera directions in MNI-style coordinates
+// (+x right, +y anterior, +z superior).
+const VIEW_PRESETS = [
+  { label: 'A', title: 'Anterior view', direction: [0, 1, 0], up: [0, 0, 1] },
+  {
+    label: 'P',
+    title: 'Posterior view',
+    direction: [0, -1, 0],
+    up: [0, 0, 1],
+  },
+  { label: 'L', title: 'Left view', direction: [-1, 0, 0], up: [0, 0, 1] },
+  { label: 'R', title: 'Right view', direction: [1, 0, 0], up: [0, 0, 1] },
+  { label: 'S', title: 'Superior view', direction: [0, 0, 1], up: [0, 1, 0] },
+  {
+    label: 'I',
+    title: 'Inferior view',
+    direction: [0, 0, -1],
+    up: [0, 1, 0],
+  },
+];
+
+const NIFTI_FILE_PATTERN = /\.nii(\.gz)?$/i;
+
+const stripNiftiExtension = (fileName: string): string =>
+  fileName.replace(NIFTI_FILE_PATTERN, '');
+
+const materialHexColor = (material: any): string | null => {
+  if (!material || material.vertexColors || !material.color) return null;
+  return `#${material.color.getHexString()}`;
+};
+
 function PlyViewer({
   quantities,
-  setQuantities,
   selectedValues,
-  setSelectedValues,
   amplitude,
-  setAmplitude,
   side,
   historical,
-  togglePosition,
+  steeringUnit,
+  onProgramChange,
   tab,
   names,
   elspec,
 }: PlyViewerProps) {
-  const [plyFile, setPlyFile] = useState(null);
+  const usesPhysicalQuantities = steeringUnit !== '%';
   const mountRef = useRef(null);
   const secondaryMountRef = useRef(null); // Ref for the secondary view
   const sphereRef = useRef(null); // Ref for the sphere to update position dynamically
@@ -101,100 +196,94 @@ function PlyViewer({
   const [plotNiiCoords, setPlotNiiCoords] = useState({});
   const [niiSolution, setNiiSolution] = useState('');
   const [slice, setSlice] = useState([]);
+  const [sceneReady, setSceneReady] = useState(false);
+  const [electrodeGeometryStatus, setElectrodeGeometryStatus] =
+    useState<ElectrodeGeometryStatus>('loading');
+  // Raw NIfTI buffers for imported overlays, kept so surfaces can be rebuilt
+  // when the smoothing level changes. Keyed by mesh name.
+  const niftiSourcesRef = useRef<Record<string, ArrayBuffer>>({});
+  const overlayColorIndexRef = useRef(0);
+  const [surfaceSmoothing, setSurfaceSmoothing] = useState(5);
+  const [backgroundColor, setBackgroundColor] = useState('#000000');
+  const [importStatus, setImportStatus] = useState<{
+    type: 'info' | 'error';
+    message: string;
+  } | null>(null);
   console.log('Historical ply: ', historical);
   // Thresholding/Modification stuff
 
-  // Don't forget **********************
   useEffect(() => {
-    // This loads in the combined electrodes for the selected patient
-    const loadPlyFile = async () => {
-      try {
-        const fileData = await window.electron.ipcRenderer.invoke(
-          'load-ply-file',
-          historical,
-        );
-        // setPlyFile(fileData);
-        console.log('fileData ply test', fileData);
-        const loader = new PLYLoader();
-        const geometry = loader.parse(fileData);
-        console.log('geometry: ', geometry);
-        const colors = geometry.attributes.color.array; // Access the existing color array
+    if (!sceneReady) return undefined;
+    let cancelled = false;
 
-        // Create a new colors array
-        const newColors = new Float32Array(colors.length);
+    const loadElectrodeGeometry = async () => {
+      setElectrodeGeometryStatus('loading');
+      const [plyResult, reconstructionResult] = await Promise.allSettled([
+        window.electron.ipcRenderer.invoke('load-ply-file', historical),
+        window.electron.ipcRenderer.invoke('load-vis-coords', historical),
+      ]);
+      if (cancelled) return;
 
-        // Define the RGB values for light grey
-        const lightGrey = [0.8, 0.8, 0.8]; // RGB for light grey
+      const reconstruction =
+        reconstructionResult.status === 'fulfilled'
+          ? reconstructionWithCoordinateAliases(reconstructionResult.value)
+          : null;
+      setRecoData(reconstruction);
 
-        // Iterate over the colors array and replace yellow-like colors with light grey
-        for (let i = 0; i < colors.length; i += 3) {
-          const r = colors[i];
-          const g = colors[i + 1];
-          const b = colors[i + 2];
-
-          // Check if the color is close to yellow, lime green, magenta, or cyan
-          if (
-            (r > 0.9 && g > 0.9 && b < 0.6) || // Yellow-like
-            (r > 0.4 && r < 0.6 && g > 0.9 && b < 0.1) || // Lime green-like
-            (r > 0.9 && g < 0.1 && b > 0.4 && b < 0.6) || // Magenta-like
-            (r < 0.1 && g > 0.4 && g < 0.6 && b > 0.9) || // Cyan-like
-            (r < 0.1 && g < 0.1 && b > 0.4 && b < 0.6) || // Blue-like
-            (r < 0.1 && g < 0.1 && b > 0.5 && b < 0.6) ||
-            (b > 0.5 && b > r && b > g) // General blue-like
-            // Specific blue shade
-          ) {
-            // If the color matches any of the specified colors, change it to light grey
-            newColors[i] = lightGrey[0];
-            newColors[i + 1] = lightGrey[1];
-            newColors[i + 2] = lightGrey[2];
-          } else {
-            // Otherwise, keep the original color
-            newColors[i] = r;
-            newColors[i + 1] = g;
-            newColors[i + 2] = b;
-          }
+      if (plyResult.status === 'fulfilled' && plyResult.value) {
+        try {
+          const geometry = parseElectrodePlyGeometry(plyResult.value);
+          const material = new THREE.MeshStandardMaterial({
+            color: geometry.hasAttribute('color') ? 0xffffff : 0xbfc3c7,
+            vertexColors: geometry.hasAttribute('color'),
+            flatShading: false,
+            roughness: 0.1,
+            transparent: false,
+            opacity: 1,
+            emissive: new THREE.Color(0x333333),
+            emissiveIntensity: 0.6,
+          });
+          // eslint-disable-next-line no-use-before-define
+          addMeshToScene('Electrode Scene', geometry, material);
+          setElectrodeGeometryStatus('ply');
+          return;
+        } catch (error) {
+          console.warn(
+            'The electrode PLY is invalid; using coordinates.',
+            error,
+          );
         }
+      }
 
-        // Update the geometry with the new colors
-        geometry.setAttribute('color', new THREE.BufferAttribute(newColors, 3));
-
-
-
-        // geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3)); // Add color attribute to geometry
-
-
-        // const material = new THREE.MeshStandardMaterial({
-        //   // color: new THREE.Color(0x808080), // Set the color to grey
-        //   vertexColors: geometry.hasAttribute('color'),
-        //   flatShading: false,
-        //   metalness: 0, // More reflective
-        //   roughness: 0.5, // Shinier surface
-        //   transparent: false, // Enable transparency
-        //   opacity: 1, // Set opacity to 60%
-        //   // blending: THREE.AdditiveBlending,
-        //   // emissive: new THREE.Color(0x000000), // Reduce emissive color
-        //   // emissiveIntensity: 0.1, // Lower emissive intensity
-        // });
+      const fallbackGeometry = createFallbackElectrodeGeometry(
+        reconstruction,
+        elspec,
+      );
+      if (fallbackGeometry) {
         const material = new THREE.MeshStandardMaterial({
-          // color: new THREE.Color(0xaaaaaa), // Set a base color for the electrode
-          vertexColors: geometry.hasAttribute('color'),
+          vertexColors: true,
           flatShading: false,
-          // metalness: 0.9, // Increase metalness for a more metallic look
-          roughness: 0.1, // Decrease roughness for a shinier surface
+          metalness: 0.25,
+          roughness: 0.35,
           transparent: false,
           opacity: 1,
-          emissive: new THREE.Color(0x333333), // Add a slight emissive color for subtle glow
-          emissiveIntensity: 0.6, // Set emissive intensity
+          emissive: new THREE.Color(0x222222),
+          emissiveIntensity: 0.25,
         });
         // eslint-disable-next-line no-use-before-define
-        addMeshToScene('Electrode Scene', geometry, material);
-      } catch (error) {
-        console.error('Error loading PLY file:', error);
+        addMeshToScene('Generic electrode model', fallbackGeometry, material);
+        setElectrodeGeometryStatus('fallback');
+        return;
       }
+
+      setElectrodeGeometryStatus('empty');
     };
 
-    loadPlyFile(); // Call the async function
-  }, []);
+    loadElectrodeGeometry();
+    return () => {
+      cancelled = true;
+    };
+  }, [elspec, historical, sceneReady]);
 
   const convert_fox_to_mni = (coordinates, resolution = 2) => {
     const offset = [45, 63, 36];
@@ -320,6 +409,8 @@ function PlyViewer({
 
   // ******************* Don't forget 8=
   useEffect(() => {
+    if (!sceneReady) return undefined;
+    let cancelled = false;
     // This loads the anatomy.ply scene
     const loadPlyFile = async () => {
       try {
@@ -327,6 +418,7 @@ function PlyViewer({
           'load-ply-file-anatomy',
           historical,
         );
+        if (cancelled || !fileData) return;
         // setPlyFile(fileData);
         const loader = new PLYLoader();
         const geometry = loader.parse(fileData);
@@ -353,26 +445,10 @@ function PlyViewer({
     };
 
     loadPlyFile(); // Call the async function
-  }, []);
-
-  useEffect(() => {
-    const loadPlyFile = async () => {
-      try {
-        const fileData = await window.electron.ipcRenderer.invoke(
-          'load-vis-coords',
-          historical,
-        );
-        // setPlyFile(fileData);
-        console.log(fileData.markers.head1);
-        console.log('fileData: ', fileData);
-        setRecoData(fileData);
-      } catch (error) {
-        console.error('Error loading PLY file:', error);
-      }
+    return () => {
+      cancelled = true;
     };
-
-    loadPlyFile(); // Call the async function
-  }, []);
+  }, [historical, sceneReady]);
 
   useEffect(() => {
     // This loads in the combined electrodes for the selected patient
@@ -568,6 +644,21 @@ function PlyViewer({
 
   const addMeshToScene = (name, geometry, material, position) => {
     const scene = sceneRef.current;
+    if (!scene) {
+      geometry?.dispose?.();
+      material?.dispose?.();
+      return;
+    }
+    const replaceNames =
+      name === 'Electrode Scene' || name === 'Generic electrode model'
+        ? new Set(['Electrode Scene', 'Generic electrode model'])
+        : new Set([name]);
+    scene.children
+      .filter((child) => replaceNames.has(child.name))
+      .forEach((child) => {
+        scene.remove(child);
+        disposeSceneObject(child);
+      });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = name; // Assign the name for reference
     if (position) {
@@ -582,10 +673,17 @@ function PlyViewer({
 
     scene.add(mesh);
 
-    setMeshes((prevMeshes) => [...prevMeshes, mesh]); // Add mesh to state
+    setMeshes((prevMeshes) => [
+      ...prevMeshes.filter((existing) => !replaceNames.has(existing.name)),
+      mesh,
+    ]); // Add mesh to state
     setMeshProperties((prevProps) => ({
       ...prevProps,
-      [name]: { visible: true, opacity: 0.8 },
+      [name]: {
+        visible: true,
+        opacity: material?.opacity ?? 0.8,
+        color: materialHexColor(material),
+      },
     }));
   };
 
@@ -675,6 +773,44 @@ function PlyViewer({
         mesh.renderOrder = 0; // Reset render order for opaque objects
       }
     }
+  };
+
+  const handleMeshColorChange = (meshName, hexColor) => {
+    setMeshProperties((prevProps) => ({
+      ...prevProps,
+      [meshName]: {
+        ...prevProps[meshName],
+        color: hexColor,
+      },
+    }));
+
+    const mesh = meshes.find((m) => m.name === meshName);
+    if (mesh?.material?.color) {
+      mesh.material.color.set(hexColor);
+      mesh.material.needsUpdate = true;
+    }
+  };
+
+  const handleRemoveMesh = (meshName) => {
+    if (ELECTRODE_MESH_NAMES.has(meshName)) return;
+    const scene = sceneRef.current;
+    if (scene) {
+      scene.children
+        .filter((child) => child.name === meshName)
+        .forEach((child) => {
+          scene.remove(child);
+          disposeSceneObject(child);
+        });
+    }
+    delete niftiSourcesRef.current[meshName];
+    setMeshes((prevMeshes) =>
+      prevMeshes.filter((existing) => existing.name !== meshName),
+    );
+    setMeshProperties((prevProps) => {
+      const nextProps = { ...prevProps };
+      delete nextProps[meshName];
+      return nextProps;
+    });
   };
 
   const handleThresholdChange = (meshName, threshold_input) => {
@@ -964,8 +1100,8 @@ function PlyViewer({
     const newAllVolAmpToggles = {};
 
     console.log('Imported Amplitude: ', jsonData.amplitude);
-    const ls1ContactKeys = Object.keys(jsonData.Ls1).filter(
-      (key) => key.startsWith('k')
+    const ls1ContactKeys = Object.keys(jsonData.Ls1).filter((key) =>
+      key.startsWith('k'),
     );
     console.log('Number of contacts in Ls1:', ls1ContactKeys.length);
     const loopSize = ls1ContactKeys.length;
@@ -1100,10 +1236,10 @@ function PlyViewer({
       new THREE.Vector3(0, 0, 1),
       THREE.MathUtils.degToRad(rotationAngle),
     ); // Z-axis rotation
-    console.log(togglePosition);
+    console.log(steeringUnit);
     // Loop through all contact directions to handle adding and updating spheres
     Object.keys(contactDirections).forEach((contactId) => {
-      console.log(togglePosition);
+      console.log(steeringUnit);
       let contactQuantity = parseFloat(quantities[contactId]);
       let newAmplitude = amplitude;
       // if (togglePosition === 'center') {
@@ -1292,9 +1428,13 @@ function PlyViewer({
 
   const calculatePercentageFromAmplitude = () => {
     const updatedQuantities = { ...quantities };
+    const sourceAmplitude = Number(amplitude);
     Object.keys(updatedQuantities).forEach((key) => {
+      const contactQuantity = Number(updatedQuantities[key]);
       updatedQuantities[key] =
-        (parseFloat(updatedQuantities[key]) * 100) / parseFloat(amplitude);
+        Number.isFinite(sourceAmplitude) && sourceAmplitude > 0
+          ? (Math.max(0, contactQuantity || 0) * 100) / sourceAmplitude
+          : 0;
     });
     return updatedQuantities;
   };
@@ -1392,22 +1532,18 @@ function PlyViewer({
     console.log(recoData);
     clearAllSpheres();
 
-    const newCoords = [];
-    let rotationAngle = 0;
-    if (side < 5 && Object.keys(quantities).length > 6) {
-      rotationAngle = recoData.directionality.roll_out_left - 60;
-    } else {
-      rotationAngle = recoData.directionality.roll_out_right - 120;
+    const requestedSide = Number(side) < 5 ? 'left' : 'right';
+    const reconstructionSide = extractFallbackElectrodeData(
+      recoData,
+    ).sides.find((candidate) => candidate.side === requestedSide);
+    if (!reconstructionSide || reconstructionSide.contacts.length === 0) {
+      return;
     }
-    const rotationQuaternion = new THREE.Quaternion();
-    rotationQuaternion.setFromAxisAngle(
-      new THREE.Vector3(0, 0, 1),
-      THREE.MathUtils.degToRad(rotationAngle),
-    ); // Z-axis rotation
+    const newCoords = [];
 
     // Loop through all contact directions to handle adding and updating spheres
     Object.keys(contactDirections).forEach((contactId) => {
-      console.log('Toggle postition: ', togglePosition);
+      console.log('Steering unit: ', steeringUnit);
       console.log('Quantities: ', quantities);
       // eslint-disable-next-line no-param-reassign
       // quantities = {
@@ -1422,7 +1558,7 @@ function PlyViewer({
       //   8: 20,
       // };
       let contactQuantity = parseFloat(quantities[contactId]);
-      if (togglePosition === 'center') {
+      if (usesPhysicalQuantities) {
         const newQuantities = calculatePercentageFromAmplitude();
         contactQuantity = parseFloat(newQuantities[contactId]);
       }
@@ -1433,86 +1569,17 @@ function PlyViewer({
         // if (!VTASpheresRef[contactId]) {
         // Calculate position and amplitude
         console.log('PLYViewer', quantities, keyLevels, contactDirections);
-        const vectorLevel = keyLevels[contactId];
-        const clampedLevel = Math.min(Math.max(vectorLevel, 1), 4);
-        const normalizedLevel = (clampedLevel - 1) / (4 - 1);
-
-        let startCoords = [];
-        let targetCoords = [];
-        if (side < 5) {
-          const { head2: headMarkers, tail2: tailMarkers } = recoData.markers;
-          startCoords = new THREE.Vector3(...headMarkers);
-          targetCoords = new THREE.Vector3(...tailMarkers);
-        } else {
-          const { head1: headMarkers, tail1: tailMarkers } = recoData.markers;
-          startCoords = new THREE.Vector3(...headMarkers);
-          targetCoords = new THREE.Vector3(...tailMarkers);
-        }
-
-        // Calculate the direction of the electrode
-        const direction = new THREE.Vector3()
-          .subVectors(targetCoords, startCoords)
-          .normalize();
-
-        // Create an orthogonal basis for the electrode
-        const up = new THREE.Vector3(0, 0, 1); // Assuming 'up' is along the global Z-axis
-        const right = new THREE.Vector3()
-          .crossVectors(direction, up)
-          .normalize();
-        const forward = new THREE.Vector3()
-          .crossVectors(right, direction)
-          .normalize();
-
-        // Linearly interpolate between startCoords and targetCoords based on normalizedLevel
-        const newPosition = startCoords
-          .clone()
-          .lerp(targetCoords, normalizedLevel);
-
-        // Get the direction adjustment for the contact
-        // const directionOffset = contactDirections[contactId];
-
-        // Get the direction offset for the contact
-        const directionOffset = new THREE.Vector3(
-          contactDirections[contactId].x,
-          contactDirections[contactId].y,
-          contactDirections[contactId].z,
-        );
-
-        // Apply the rotation to the directionOffset using the quaternion
-        directionOffset.applyQuaternion(rotationQuaternion);
-
-        // Apply the direction offset to the newPosition relative to the electrode's orientation
-        newPosition.x +=
-          right.x * directionOffset.x +
-          forward.x * directionOffset.y +
-          direction.x * directionOffset.z;
-        newPosition.y +=
-          right.y * directionOffset.x +
-          forward.y * directionOffset.y +
-          direction.y * directionOffset.z;
-        newPosition.z +=
-          right.z * directionOffset.x +
-          forward.z * directionOffset.y +
-          direction.z * directionOffset.z;
-        console.log('recoData: ', recoData);
-        console.log('Side: ', side);
-        console.log('contactId: ', contactId);
-        if (side < 5) {
-          newPosition.x = recoData.coords_left[contactId - 1][0];
-          newPosition.y = recoData.coords_left[contactId - 1][1];
-          newPosition.z = recoData.coords_left[contactId - 1][2];
-        } else {
-          newPosition.x = recoData.coords_right[contactId - 1][0];
-          newPosition.y = recoData.coords_right[contactId - 1][1];
-          newPosition.z = recoData.coords_right[contactId - 1][2];
-        }
+        const contactPosition =
+          reconstructionSide.contacts[Number(contactId) - 1];
+        if (!contactPosition) return;
+        const newPosition = new THREE.Vector3(...contactPosition);
         newCoords.push([newPosition.x, newPosition.y, newPosition.z]);
         // Calculate amplitude based on contactQuantity
         const contactAmplitude = (contactQuantity / 100) * amplitude;
 
         // Create a new sphere
         const geometry = new THREE.SphereGeometry(
-          Math.sqrt((contactAmplitude - 0.1) / 0.22),
+          Math.sqrt(Math.max(0.05, (contactAmplitude - 0.1) / 0.22)),
           32,
           32,
         );
@@ -1814,38 +1881,36 @@ function PlyViewer({
       secondaryCameraRef.current = secondaryCamera;
       secondaryRendererRef.current = secondaryRenderer;
       cameraRef.current = camera;
+      setSceneReady(true);
 
+      let animationFrameId = 0;
       const animate = () => {
-        requestAnimationFrame(animate);
+        animationFrameId = requestAnimationFrame(animate);
         controls.update(); // Update OrbitControls
-        renderer.render(sceneRef.current, camera);
+        renderer.render(scene, camera);
         secondaryRenderer.render(scene, secondaryCamera);
       };
       animate();
 
-      const textureLoader = new THREE.TextureLoader();
-      textureLoader.load(EdlowBrain, (texture) => {
-        // Calculate the aspect ratio of the texture
-        const aspectRatio = texture.image.width / texture.image.height;
-
-        // Create a plane geometry with the correct aspect ratio
-        const planeGeometry = new THREE.PlaneGeometry(256 * aspectRatio, 256);
-
-        const planeMaterial = new THREE.MeshBasicMaterial({ map: texture });
-        const plane = new THREE.Mesh(planeGeometry, planeMaterial);
-
-        // Position the plane in the scene
-        plane.position.set(-12, -15, -12); // Adjust position as needed
-        // scene.add(plane);
-      });
-
       return () => {
-        // window.removeEventListener('resize', onWindowResize);
+        setSceneReady(false);
+        cancelAnimationFrame(animationFrameId);
+        controls.dispose();
+        disposeSceneObject(scene);
+        renderer.domElement.remove();
+        secondaryRenderer.domElement.remove();
         renderer.dispose();
         secondaryRenderer.dispose();
+        controlsRef.current = null;
+        rendererRef.current = null;
+        secondaryRendererRef.current = null;
+        cameraRef.current = null;
+        secondaryCameraRef.current = null;
+        if (sceneRef.current === scene) sceneRef.current = null;
       };
     }
-  }, [plyFile]);
+    return undefined;
+  }, []);
 
   // useEffect(() => {
   //   if (mountRef.current && secondaryMountRef.current) {
@@ -2432,89 +2497,127 @@ function PlyViewer({
 
   const [zoomLevel, setZoomLevel] = useState(-3);
 
-  // Function to change the camera angle
+  const reconstructionCameraBounds = () => {
+    const requestedSide = Number(side) < 5 ? 'left' : 'right';
+    const bounds = getFallbackElectrodeBounds(recoData, requestedSide);
+    if (!bounds) return null;
+    return {
+      center: new THREE.Vector3(...bounds.center),
+      size: new THREE.Vector3(...bounds.size),
+    };
+  };
+
+  const selectedReconstructionMarkers = () => {
+    const requestedSide = Number(side) < 5 ? 'left' : 'right';
+    const selectedSide = extractFallbackElectrodeData(recoData).sides.find(
+      (candidate) => candidate.side === requestedSide,
+    );
+    if (!selectedSide?.head || !selectedSide.tail) return null;
+    return {
+      head: new THREE.Vector3(...selectedSide.head),
+      tail: new THREE.Vector3(...selectedSide.tail),
+    };
+  };
+
+  const selectedDirectionalityAngle = () => {
+    const isLeft = Number(side) < 5;
+    const rawRoll =
+      recoData?.directionality?.[isLeft ? 'roll_out_left' : 'roll_out_right'];
+    if (
+      rawRoll === null ||
+      rawRoll === undefined ||
+      (Array.isArray(rawRoll) && rawRoll.length === 0) ||
+      (typeof rawRoll === 'string' && rawRoll.trim() === '')
+    ) {
+      return 0;
+    }
+    const roll = Number(rawRoll);
+    if (!Number.isFinite(roll)) return 0;
+    return roll - (isLeft ? 60 : 120);
+  };
+
+  // The fixed bottom view looks from above the proximal (tail) end of the
+  // lead straight down the shaft toward the distal head. The pose is derived
+  // directly from the reconstruction markers (with a principal-axis fit over
+  // the contacts as fallback), so arbitrary lead orientations stay axial
+  // instead of going oblique.
   const changeCameraAngle = () => {
     const camera = secondaryCameraRef.current;
-    let startCoords = [];
-    let targetCoords = [];
-    if (side < 5) {
-      const { head2: headMarkers, tail2: tailMarkers } = recoData.markers;
-      startCoords = new THREE.Vector3(...headMarkers);
-      targetCoords = new THREE.Vector3(...tailMarkers);
-    } else {
-      const { head1: headMarkers, tail1: tailMarkers } = recoData.markers;
-      startCoords = new THREE.Vector3(...headMarkers);
-      targetCoords = new THREE.Vector3(...tailMarkers);
-    }
+    if (!camera) return;
 
-    if (camera) {
-      // Calculate the direction vector by subtracting startCoords from endCoords
-      const directionVector = new THREE.Vector3(
-        targetCoords.x - startCoords.x,
-        targetCoords.y - startCoords.y,
-        targetCoords.z - startCoords.z,
-      );
+    const requestedSide = Number(side) < 5 ? 'left' : 'right';
+    const { sides } = extractFallbackElectrodeData(recoData);
+    const selectedSide =
+      sides.find((candidate) => candidate.side === requestedSide) ?? sides[0];
+    const pose = selectedSide
+      ? createLeadAxisCameraPose({
+          head: selectedSide.head,
+          tail: selectedSide.tail,
+          contacts: selectedSide.contacts,
+          baseFrustumHeight: 45,
+          aspect: 2, // 500 x 250 render surface
+          minimumVisibleHeight: 8,
+          padding: 1.5,
+        })
+      : null;
 
-      // Normalize the direction vector
-      directionVector.normalize();
-
-      // Position the camera above the vector (for example, along the z-axis)
-      const cameraDistance = 50; // Distance from the vector
-      const cameraPosition = new THREE.Vector3();
-      cameraPosition
-        .copy(startCoords)
-        .addScaledVector(directionVector, cameraDistance);
-      const v = directionVector;
-      const yaw = Math.atan2(v.x, v.z);
-      const pitch = Math.atan2(v.y, v.z);
-      const roll = 0;
-      const newSwitchedPosition = new THREE.Vector3(
-        cameraPosition.x,
-        cameraPosition.y,
-        cameraPosition.z,
-      );
-      camera.position.copy(newSwitchedPosition); // Move the camera to the calculated point
-      camera.rotation.set(-pitch, yaw, roll, 'XYZ'); // Set the camera rotations
-      camera.zoom = 3.25;
+    if (pose) {
+      camera.up.set(...pose.up);
+      camera.position.set(...pose.position);
+      camera.lookAt(...pose.target);
+      camera.near = 0.1;
+      camera.far = Math.max(1000, pose.distance * 4);
+      camera.zoom = pose.zoom;
       camera.updateProjectionMatrix();
+      return;
     }
+
+    // Fallback framing when no markers or contacts are available at all.
+    const bounds = reconstructionCameraBounds();
+    if (!bounds) return;
+    const distance = Math.max(25, bounds.size.length() * 2.5);
+    camera.up.set(0, 0, 1);
+    camera.position.copy(
+      bounds.center.clone().add(new THREE.Vector3(0, -distance, distance)),
+    );
+    camera.lookAt(bounds.center);
+    camera.zoom = Math.min(
+      4,
+      Math.max(
+        0.75,
+        30 / Math.max(bounds.size.x, bounds.size.y, bounds.size.z, 1),
+      ),
+    );
+    camera.updateProjectionMatrix();
   };
 
   const changePrimaryCameraAngle = () => {
     const camera = cameraRef.current;
-    let startCoords = [];
-    let targetCoords = [];
-    if (side < 5) {
-      const { head2: headMarkers, tail2: tailMarkers } = recoData.markers;
-      startCoords = new THREE.Vector3(...headMarkers);
-      targetCoords = new THREE.Vector3(...tailMarkers);
-    } else {
-      const { head1: headMarkers, tail1: tailMarkers } = recoData.markers;
-      startCoords = new THREE.Vector3(...headMarkers);
-      targetCoords = new THREE.Vector3(...tailMarkers);
-    }
-
-    if (camera) {
-      // Calculate the direction vector by subtracting startCoords from endCoords
-      const focalPoint = new THREE.Vector3(
-        startCoords.x,
-        camera.position.y,
-        camera.position.z,
-      );
-      camera.position.copy(focalPoint); // Move the camera to the calculated point
-      camera.rotation.set(0.8, 0, 0, 'XYZ');
-      camera.lookAt(startCoords);
-      camera.zoom = 3;
-      camera.updateProjectionMatrix();
-    }
+    const bounds = reconstructionCameraBounds();
+    if (!camera || !bounds) return;
+    const distance = Math.max(25, bounds.size.length() * 2.5);
+    camera.position.copy(
+      bounds.center.clone().add(new THREE.Vector3(0, -distance, distance)),
+    );
+    camera.lookAt(bounds.center);
+    camera.zoom = Math.min(
+      3,
+      Math.max(
+        0.75,
+        25 / Math.max(bounds.size.x, bounds.size.y, bounds.size.z, 1),
+      ),
+    );
+    camera.updateProjectionMatrix();
   };
 
   useEffect(() => {
     if (recoData) {
       changeCameraAngle();
-      // changePrimaryCameraAngle();
+      if (electrodeGeometryStatus === 'fallback') {
+        changePrimaryCameraAngle();
+      }
     }
-  }, [recoData, side]);
+  }, [electrodeGeometryStatus, recoData, side]);
 
   const findNearestCoordinate = (target, coordinates) => {
     const [x1, y1, z1] = target;
@@ -2609,42 +2712,16 @@ function PlyViewer({
 
   const handleNiftiQuantityStateChange = (v) => {
     console.log(stimParams);
-    const updatedQuantities = { ...quantities };
-    const updatedSelectedValues = { ...selectedValues };
-    const updatedV = v;
-    let numActive = 0;
-    let totalAmp = 0;
-    Object.keys(updatedV).forEach((key) => {
-      if (updatedV[key] >= 0.2) {
-        numActive += 1;
-        updatedV[key] = Math.round(updatedV[key] * 10) / 10;
-        totalAmp += updatedV[key];
-      } else {
-        updatedV[key] = 0;
-      }
-    });
-    Object.keys(updatedQuantities).forEach((contact) => {
-      // skipping IPG
-      if (parseFloat(contact) === 0) {
-        updatedQuantities[contact] = totalAmp;
-        updatedSelectedValues[contact] = 'right';
-        return;
-      }
-      if (updatedV[contact - 1] !== 0) {
-        updatedSelectedValues[contact] = 'center';
-        if (togglePosition === 'center') {
-          updatedQuantities[contact] = updatedV[contact - 1];
-        } else {
-          updatedQuantities[contact] = (100 * updatedV[contact - 1]) / totalAmp;
-        }
-      } else {
-        updatedQuantities[contact] = 0;
-        updatedSelectedValues[contact] = 'left';
-      }
-    });
-    setAmplitude(totalAmp);
-    setQuantities(updatedQuantities);
-    setSelectedValues(updatedSelectedValues);
+    const program = niftiValuesToViewerProgram(
+      v,
+      { quantities, selectedValues },
+      steeringUnit,
+    );
+    onProgramChange(
+      program.quantities,
+      program.selectedValues,
+      program.amplitude,
+    );
   };
 
   const handleQuantityStateChange = (index, tmpAmp) => {
@@ -2658,7 +2735,7 @@ function PlyViewer({
       }
       if (parseFloat(contact) === changedContact) {
         updatedSelectedValues[contact] = 'center';
-        if (togglePosition === 'center') {
+        if (usesPhysicalQuantities) {
           updatedQuantities[contact] = tmpAmp;
         } else {
           updatedQuantities[contact] = 100;
@@ -2668,9 +2745,7 @@ function PlyViewer({
         updatedSelectedValues[contact] = 'left';
       }
     });
-    setAmplitude(tmpAmp);
-    setQuantities(updatedQuantities);
-    setSelectedValues(updatedSelectedValues);
+    onProgramChange(updatedQuantities, updatedSelectedValues, tmpAmp);
   };
 
   const handleQuantityStateChangeGroup = (indexList, tmpAmp, contactShare) => {
@@ -2686,18 +2761,15 @@ function PlyViewer({
       // Check if the contact is in the list of specified indexes
       if (indexList.includes(parseFloat(contact) - 1)) {
         updatedSelectedValues[contact] = 'center';
-        updatedQuantities[contact] =
-          togglePosition === 'center'
-            ? tmpAmp * contactShare[parseFloat(contact - 1)]
-            : 100 * contactShare[parseFloat(contact - 1)];
+        updatedQuantities[contact] = usesPhysicalQuantities
+          ? tmpAmp * contactShare[parseFloat(contact - 1)]
+          : 100 * contactShare[parseFloat(contact - 1)];
       } else {
         updatedQuantities[contact] = 0;
         updatedSelectedValues[contact] = 'left';
       }
     });
-    setAmplitude(tmpAmp);
-    setQuantities(updatedQuantities);
-    setSelectedValues(updatedSelectedValues);
+    onProgramChange(updatedQuantities, updatedSelectedValues, tmpAmp);
   };
 
   const cylinderSurfaceArea = (
@@ -2757,6 +2829,13 @@ function PlyViewer({
   };
 
   const handleSTNParameters = () => {
+    const selectedMarkers = selectedReconstructionMarkers();
+    if (!selectedMarkers) {
+      console.warn(
+        'STN parameter optimization needs head and tail markers for the selected electrode side.',
+      );
+      return;
+    }
     const STNCoords = new THREE.Vector3(11.28, -13.92, -9.02);
     const bestQuantities = {};
     const bestAmplitude = amplitude; // Initial amplitude
@@ -2764,12 +2843,7 @@ function PlyViewer({
 
     const newCoords = [];
 
-    let rotationAngle = 0;
-    if (side < 5 && Object.keys(quantities).length > 6) {
-      rotationAngle = recoData.directionality.roll_out_left - 60;
-    } else {
-      rotationAngle = recoData.directionality.roll_out_right - 120;
-    }
+    const rotationAngle = selectedDirectionalityAngle();
     const rotationQuaternion = new THREE.Quaternion();
     rotationQuaternion.setFromAxisAngle(
       new THREE.Vector3(0, 0, 1),
@@ -2777,9 +2851,9 @@ function PlyViewer({
     ); // Z-axis rotation
 
     Object.keys(contactDirections).forEach((contactId) => {
-      console.log(togglePosition);
+      console.log(steeringUnit);
       let contactQuantity = parseFloat(quantities[contactId]);
-      if (togglePosition === 'center') {
+      if (usesPhysicalQuantities) {
         const newQuantities = calculatePercentageFromAmplitude();
         contactQuantity = parseFloat(newQuantities[contactId]);
       }
@@ -2793,17 +2867,8 @@ function PlyViewer({
       const clampedLevel = Math.min(Math.max(vectorLevel, 1), 4);
       const normalizedLevel = (clampedLevel - 1) / (4 - 1);
 
-      let startCoords = [];
-      let targetCoords = [];
-      if (side < 5) {
-        const { head2: headMarkers, tail2: tailMarkers } = recoData.markers;
-        startCoords = new THREE.Vector3(...headMarkers);
-        targetCoords = new THREE.Vector3(...tailMarkers);
-      } else {
-        const { head1: headMarkers, tail1: tailMarkers } = recoData.markers;
-        startCoords = new THREE.Vector3(...headMarkers);
-        targetCoords = new THREE.Vector3(...tailMarkers);
-      }
+      const startCoords = selectedMarkers.head;
+      const targetCoords = selectedMarkers.tail;
 
       // Calculate the direction of the electrode
       const direction = new THREE.Vector3()
@@ -2940,14 +3005,11 @@ function PlyViewer({
 
   useEffect(() => {
     try {
+      const selectedMarkers = selectedReconstructionMarkers();
+      if (!selectedMarkers) return;
       const newCoords = [];
 
-      let rotationAngle = 0;
-      if (side < 5 && Object.keys(quantities).length > 6) {
-        rotationAngle = recoData.directionality.roll_out_left - 60;
-      } else {
-        rotationAngle = recoData.directionality.roll_out_right - 120;
-      }
+      const rotationAngle = selectedDirectionalityAngle();
       const rotationQuaternion = new THREE.Quaternion();
       rotationQuaternion.setFromAxisAngle(
         new THREE.Vector3(0, 0, 1),
@@ -2955,9 +3017,9 @@ function PlyViewer({
       ); // Z-axis rotation
 
       Object.keys(contactDirections).forEach((contactId) => {
-        console.log(togglePosition);
+        console.log(steeringUnit);
         let contactQuantity = parseFloat(quantities[contactId]);
-        if (togglePosition === 'center') {
+        if (usesPhysicalQuantities) {
           const newQuantities = calculatePercentageFromAmplitude();
           contactQuantity = parseFloat(newQuantities[contactId]);
         }
@@ -2971,17 +3033,8 @@ function PlyViewer({
         const clampedLevel = Math.min(Math.max(vectorLevel, 1), 4);
         const normalizedLevel = (clampedLevel - 1) / (4 - 1);
 
-        let startCoords = [];
-        let targetCoords = [];
-        if (side < 5) {
-          const { head2: headMarkers, tail2: tailMarkers } = recoData.markers;
-          startCoords = new THREE.Vector3(...headMarkers);
-          targetCoords = new THREE.Vector3(...tailMarkers);
-        } else {
-          const { head1: headMarkers, tail1: tailMarkers } = recoData.markers;
-          startCoords = new THREE.Vector3(...headMarkers);
-          targetCoords = new THREE.Vector3(...tailMarkers);
-        }
+        const startCoords = selectedMarkers.head;
+        const targetCoords = selectedMarkers.tail;
 
         // Calculate the direction of the electrode
         const direction = new THREE.Vector3()
@@ -3037,7 +3090,7 @@ function PlyViewer({
     } catch (err) {
       console.log(err);
     }
-  }, [recoData]);
+  }, [recoData, side]);
 
   const findClusters = (coordinates, epsilon) => {
     // Step 1: Filter for positive points
@@ -3209,10 +3262,10 @@ function PlyViewer({
     const sphereCoords = elecCoords;
     console.log(elecCoords);
     // const v = [0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75];
-    const v =
-      elspec.numel === 8
-        ? [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
-        : [1, 1, 1, 1];
+    const v = Array.from(
+      { length: sphereCoords.length },
+      () => 4 / Math.max(sphereCoords.length, 1),
+    );
     // const v = [1, 1, 1, 1];
     // const L = niiCoords;
     const L = importedCoords;
@@ -3267,7 +3320,8 @@ function PlyViewer({
     const otherContacts = v.length - 1;
 
     // Distribute remaining amplitude equally
-    const equalAmplitude = remainingAmplitude / otherContacts;
+    const equalAmplitude =
+      otherContacts > 0 ? remainingAmplitude / otherContacts : 0;
 
     // Update the array
     const updatedV = v.map((value, index) =>
@@ -3278,8 +3332,7 @@ function PlyViewer({
 
     const outputV = optimizeSphereValues(
       sphereCoords,
-      // updatedV,
-      [1, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 1],
+      updatedV,
       normalizedPlotNiiCoords,
       // normalizedTestCoords,
     );
@@ -4060,66 +4113,195 @@ function PlyViewer({
     }
   };
 
-  const handleFile = (file) => {
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const fileData = event.target.result;
-      // Check if the file is a zip
-      if (file.name.endsWith('.gz')) {
-        // Use fflate to unzip the file
-        fflate.gunzip(new Uint8Array(fileData), (err, unzipped) => {
-          if (err) {
-            console.error('Error unzipping file:', err);
-            return;
-          }
-          Object.keys(unzipped).forEach((filename) => {
-            if (filename.endsWith('.nii')) {
-              const unzippedFileData = unzipped[filename];
-              // Process the unzipped NIfTI file
-              console.log('Unzipped NIfTI file:', filename);
-              return reader.readAsArrayBuffer(unzippedFileData);
-              // You can trigger any function here to process the unzipped NIfTI file
-            }
-          });
-        });
-      } else {
-        console.log('File is not a gzip:', file.name);
-        // You can trigger any function here to process the non-gzipped file
-      }
-    };
-    return reader.readAsArrayBuffer(file);
+  // Builds an overlay surface from a raw NIfTI buffer (nii2Mesh handles
+  // gzip-compressed volumes internally) and adds it to the scene. The buffer
+  // is retained so the surface can be rebuilt when smoothing changes.
+  const importNiftiOverlay = (overlayName, buffer) => {
+    const { geometry, material } = nii2Mesh(buffer, {
+      smoothingIterations: surfaceSmoothing,
+    });
+    material.color.set(
+      OVERLAY_COLOR_PALETTE[
+        overlayColorIndexRef.current % OVERLAY_COLOR_PALETTE.length
+      ],
+    );
+    overlayColorIndexRef.current += 1;
+    niftiSourcesRef.current[overlayName] = buffer;
+    addMeshToScene(overlayName, geometry, material);
   };
 
-  const onDrop = (acceptedFiles) => {
-    // Handle the dropped files here
-    const file = acceptedFiles[0];
-    const fileData = handleFile(file);
-    const mesh = nii2Mesh(fileData);
-    // const mesh = await convertNiftiToMesh(fileData, threshold, colorMap);
-
-    // Add the mesh to the scene
-    if (mesh) {
-      addMeshToScene('NIfTI Volume', mesh.geometry, mesh.material);
-
-      // Log information about the mesh
-      console.log(
-        'Mesh added to scene:',
-        mesh.geometry.attributes.position.count,
-        'vertices',
-      );
-    } else {
-      console.error('Failed to create mesh from NIfTI data');
+  const onDrop = async (acceptedFiles) => {
+    const niftiFiles = acceptedFiles.filter((file) =>
+      NIFTI_FILE_PATTERN.test(file.name),
+    );
+    if (niftiFiles.length === 0) {
+      setImportStatus({
+        type: 'error',
+        message: 'Only NIfTI volumes (.nii or .nii.gz) can be imported here.',
+      });
+      return;
     }
-    // You can trigger any function here to process the files
+
+    const imported = [];
+    const failed = [];
+    // Sequential on purpose: marching cubes is CPU-heavy and parallel imports
+    // would just fight over the main thread.
+    for (const file of niftiFiles) {
+      const overlayName = stripNiftiExtension(file.name);
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const buffer = await file.arrayBuffer();
+        importNiftiOverlay(overlayName, buffer);
+        imported.push(overlayName);
+      } catch (error) {
+        console.error(`Failed to import NIfTI overlay ${file.name}:`, error);
+        failed.push(overlayName);
+      }
+    }
+
+    if (failed.length > 0) {
+      setImportStatus({
+        type: 'error',
+        message: `Could not import: ${failed.join(', ')}. Check that the file is a valid NIfTI volume.`,
+      });
+    } else {
+      setImportStatus({
+        type: 'info',
+        message: `Added ${imported.join(', ')} to the scene.`,
+      });
+    }
   };
 
-  const { getRootProps, getInputProps } = useDropzone({ onDrop });
+  const {
+    getRootProps,
+    getInputProps,
+    isDragActive,
+    open: openNiftiFileDialog,
+  } = useDropzone({
+    onDrop,
+    noClick: true,
+    noKeyboard: true,
+    accept: {
+      'application/octet-stream': ['.nii'],
+      'application/gzip': ['.gz'],
+    },
+  });
+
+  // Auto-dismiss import notifications.
+  useEffect(() => {
+    if (!importStatus) return undefined;
+    const timer = setTimeout(() => setImportStatus(null), 6000);
+    return () => clearTimeout(timer);
+  }, [importStatus]);
+
+  // Rebuild imported overlay surfaces when the smoothing level changes,
+  // keeping each mesh's material (color/opacity) untouched. Debounced so
+  // dragging the slider doesn't re-run marching cubes on every tick.
+  useEffect(() => {
+    const sources = Object.entries(niftiSourcesRef.current);
+    if (sources.length === 0) return undefined;
+    const timer = setTimeout(() => {
+      const scene = sceneRef.current;
+      if (!scene) return;
+      sources.forEach(([overlayName, buffer]) => {
+        const existing: any = scene.children.find(
+          (child) => child.name === overlayName,
+        );
+        if (!existing) return;
+        try {
+          const rebuilt = nii2Mesh(buffer, {
+            smoothingIterations: surfaceSmoothing,
+          });
+          existing.geometry?.dispose?.();
+          existing.geometry = rebuilt.geometry;
+          rebuilt.material.dispose();
+        } catch (error) {
+          console.error(`Failed to re-smooth overlay ${overlayName}:`, error);
+        }
+      });
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [surfaceSmoothing]);
+
+  // Keep the scene background in sync with the selected color.
+  useEffect(() => {
+    if (sceneRef.current) {
+      sceneRef.current.background = new THREE.Color(backgroundColor);
+    }
+  }, [backgroundColor, sceneReady]);
+
+  const visibleSceneBounds = () => {
+    const scene = sceneRef.current;
+    if (!scene) return null;
+    const box = new THREE.Box3();
+    let hasContent = false;
+    scene.children.forEach((child: any) => {
+      if (!child.isMesh || !child.visible) return;
+      box.expandByObject(child);
+      hasContent = true;
+    });
+    return hasContent && !box.isEmpty() ? box : null;
+  };
+
+  // Snap the main camera to a standard anatomical viewing direction, framed
+  // around the reconstruction (or, failing that, whatever is in the scene).
+  const applyViewPreset = (directionArray, upArray) => {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!camera) return;
+
+    const reconstruction = reconstructionCameraBounds();
+    let center = reconstruction?.center ?? null;
+    let radius = reconstruction ? reconstruction.size.length() / 2 : 0;
+    if (!center) {
+      const box = visibleSceneBounds();
+      if (!box) return;
+      center = box.getCenter(new THREE.Vector3());
+      radius = box.getSize(new THREE.Vector3()).length() / 2;
+    }
+
+    const distance = Math.max(50, radius * 3);
+    const direction = new THREE.Vector3(...directionArray).normalize();
+    camera.up.set(...upArray);
+    camera.position.copy(
+      center.clone().add(direction.multiplyScalar(distance)),
+    );
+    camera.lookAt(center);
+    camera.updateProjectionMatrix();
+    if (controls) {
+      controls.target.copy(center);
+      controls.update();
+    }
+  };
+
+  const resetPrimaryView = () => {
+    applyViewPreset([0, -1, 1], [0, 0, 1]);
+  };
+
+  const captureScreenshot = () => {
+    const renderer = rendererRef.current;
+    const camera = cameraRef.current;
+    const scene = sceneRef.current;
+    if (!renderer || !camera || !scene) return;
+    // Render immediately before reading pixels: the drawing buffer is not
+    // preserved between frames.
+    renderer.render(scene, camera);
+    const link = document.createElement('a');
+    link.download = `lead-viewer-${new Date()
+      .toISOString()
+      .replace(/[:.]/g, '-')}.png`;
+    link.href = renderer.domElement.toDataURL('image/png');
+    link.click();
+  };
 
   const [isFullScreen, setIsFullScreen] = useState(false);
 
   const toggleFullScreen = () => {
     const renderer = rendererRef.current;
-    renderer.setSize(Math.min(window.innerWidth, window.innerHeight), Math.min(window.innerWidth, window.innerHeight));
+    renderer.setSize(
+      Math.min(window.innerWidth, window.innerHeight),
+      Math.min(window.innerWidth, window.innerHeight),
+    );
     const baseWidth = 500; // Base width
     const baseHeight = 500; // Base height
     const aspectRatio = baseWidth / baseHeight;
@@ -4170,7 +4352,7 @@ function PlyViewer({
   };
   const [val, setVal] = useState(-10);
   const handleSlideSlice = (val_import) => {
-    let zVal = val + val_import/100;
+    let zVal = val + val_import / 100;
     console.log('zVal: ', zVal);
     const { mniCoordinates, header, voxelCoordinates } = slice;
     const [nx, ny, nz] = header.dims.slice(1, 4);
@@ -4229,7 +4411,7 @@ function PlyViewer({
     const material = new THREE.ShaderMaterial({
       uniforms: {
         uTex: { value: texture },
-        uSlice: { value: 0 } // Uniform to select the slice
+        uSlice: { value: 0 }, // Uniform to select the slice
       },
       side: THREE.DoubleSide,
       vertexShader: `
@@ -4247,7 +4429,7 @@ function PlyViewer({
           vec4 color = texture(uTex, vec3(vUv, uSlice));
           gl_FragColor = color;
         }
-      `
+      `,
     });
 
     // Create the mesh
@@ -4255,7 +4437,7 @@ function PlyViewer({
     const position = [0, 0, zVal];
 
     addMeshToScene('NIfTI Volume', mesh.geometry, mesh.material, position);
-  }
+  };
 
   const handleZoom = (event) => {
     if (isFrozen) {
@@ -4268,7 +4450,8 @@ function PlyViewer({
 
   // Add event listeners when the component mounts
   useEffect(() => {
-    const rendererElement = rendererRef.current.domElement; // Assuming you have a ref to the renderer
+    const rendererElement = rendererRef.current?.domElement;
+    if (!rendererElement) return undefined;
 
     const onMouseMove = (event) => {
       handleMouseHover(event);
@@ -4278,21 +4461,15 @@ function PlyViewer({
       handleZoom(event);
     };
 
-    if (rendererElement) {
-      // rendererElement.addEventListener('mousemove', onMouseMove);
-      rendererElement.addEventListener('wheel', onWheel);
-
-    }
+    // rendererElement.addEventListener('mousemove', onMouseMove);
+    rendererElement.addEventListener('wheel', onWheel);
 
     // Clean up event listeners on component unmount
     return () => {
-      if (rendererElement) {
-        // rendererElement.removeEventListener('mousemove', onMouseMove);
-        rendererElement.addEventListener('wheel', onWheel);
-
-      }
+      // rendererElement.removeEventListener('mousemove', onMouseMove);
+      rendererElement.removeEventListener('wheel', onWheel);
     };
-  }, [isFrozen]);
+  }, [isFrozen, sceneReady]);
 
   const handleKeyPress = (event) => {
     if (event.key === 'Escape') {
@@ -4328,17 +4505,81 @@ function PlyViewer({
           </IconButton> */}
 
           <div
-            ref={mountRef}
-            style={{
-              borderRadius: '15px',
-              // Adjust size based on full-screen state
-              width: isFullScreen ? '100vw' : 'auto',
-              height: isFullScreen ? '100vh' : 'auto',
-            }}
-          />
-          <div ref={secondaryMountRef} />
+            {...getRootProps()}
+            style={{ position: 'relative' }}
+            data-testid="nifti-dropzone"
+          >
+            <input {...getInputProps()} />
+            <div style={viewerToolbarStyle}>
+              {VIEW_PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  title={preset.title}
+                  style={viewerToolbarButtonStyle}
+                  onClick={() => applyViewPreset(preset.direction, preset.up)}
+                >
+                  {preset.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                title="Reset view"
+                style={viewerToolbarButtonStyle}
+                onClick={resetPrimaryView}
+              >
+                ⟲
+              </button>
+              <button
+                type="button"
+                title="Save screenshot (PNG)"
+                style={viewerToolbarButtonStyle}
+                onClick={captureScreenshot}
+              >
+                ⬇
+              </button>
+            </div>
+            <div
+              ref={mountRef}
+              style={{
+                borderRadius: '15px',
+                // Adjust size based on full-screen state
+                width: isFullScreen ? '100vw' : 'auto',
+                height: isFullScreen ? '100vh' : 'auto',
+              }}
+            />
+            <div ref={secondaryMountRef} />
+            {isDragActive && (
+              <div style={dropOverlayStyle}>
+                Drop NIfTI volumes (.nii / .nii.gz) to add them to the scene
+              </div>
+            )}
+            {importStatus && (
+              <div
+                role="status"
+                style={
+                  importStatus.type === 'error'
+                    ? importErrorToastStyle
+                    : importInfoToastStyle
+                }
+              >
+                {importStatus.message}
+              </div>
+            )}
+          </div>
+          {electrodeGeometryStatus === 'fallback' && (
+            <div role="status" style={geometryStatusStyle}>
+              Generic electrode model (PLY unavailable)
+            </div>
+          )}
+          {electrodeGeometryStatus === 'empty' && (
+            <div role="alert" style={geometryErrorStyle}>
+              Electrode geometry is unavailable. Reopen the patient in Lead-DBS
+              to regenerate its reconstruction coordinates or PLY export.
+            </div>
+          )}
         </div>
-        <Dropdown drop="start" style={{zIndex: 1001}}>
+        <Dropdown drop="start" style={{ zIndex: 1001 }}>
           <Dropdown.Toggle variant="secondary" style={{ marginLeft: '-100px' }}>
             <SettingsIcon />
           </Dropdown.Toggle>
@@ -4391,8 +4632,107 @@ function PlyViewer({
                           }
                           style={{ width: '150px' }}
                         />
+                        {meshProperties[mesh.name]?.color && (
+                          <>
+                            <h3 style={{ fontSize: '12px', color: '#333' }}>
+                              Color
+                            </h3>
+                            <Form.Control
+                              type="color"
+                              value={meshProperties[mesh.name].color}
+                              onChange={(e) =>
+                                handleMeshColorChange(
+                                  mesh.name,
+                                  e.target.value,
+                                )
+                              }
+                              style={{ width: '60px', padding: '2px' }}
+                            />
+                          </>
+                        )}
+                        {!ELECTRODE_MESH_NAMES.has(mesh.name) && (
+                          <Button
+                            variant="outline-danger"
+                            size="sm"
+                            style={{ marginTop: '8px' }}
+                            onClick={() => handleRemoveMesh(mesh.name)}
+                          >
+                            Remove
+                          </Button>
+                        )}
                       </div>
                     ))}
+                  </div>
+                </Tab>
+                <Tab eventKey="display" title="Display">
+                  <div style={controlPanelStyle}>
+                    <h5 style={meshNameStyle}>Background</h5>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '6px',
+                        alignItems: 'center',
+                      }}
+                    >
+                      {BACKGROUND_PRESETS.map((preset) => (
+                        <button
+                          key={preset.value}
+                          type="button"
+                          title={preset.label}
+                          aria-label={`${preset.label} background`}
+                          onClick={() => setBackgroundColor(preset.value)}
+                          style={{
+                            width: '24px',
+                            height: '24px',
+                            borderRadius: '50%',
+                            border:
+                              backgroundColor === preset.value
+                                ? '2px solid #4b9fe0'
+                                : '1px solid #999',
+                            backgroundColor: preset.value,
+                            cursor: 'pointer',
+                          }}
+                        />
+                      ))}
+                      <Form.Control
+                        type="color"
+                        value={backgroundColor}
+                        onChange={(e) => setBackgroundColor(e.target.value)}
+                        style={{ width: '48px', padding: '2px' }}
+                      />
+                    </div>
+                    <h5 style={{ ...meshNameStyle, marginTop: '16px' }}>
+                      Structure smoothing
+                    </h5>
+                    <div style={{ fontSize: '12px', color: '#333' }}>
+                      Smooths imported NIfTI surfaces (Taubin,{' '}
+                      {surfaceSmoothing} iteration
+                      {surfaceSmoothing === 1 ? '' : 's'})
+                    </div>
+                    <Form.Range
+                      min={0}
+                      max={15}
+                      step={1}
+                      value={surfaceSmoothing}
+                      onChange={(e) =>
+                        setSurfaceSmoothing(parseInt(e.target.value, 10))
+                      }
+                      style={{ width: '150px' }}
+                    />
+                    <h5 style={{ ...meshNameStyle, marginTop: '16px' }}>
+                      NIfTI overlays
+                    </h5>
+                    <div style={{ fontSize: '12px', color: '#333' }}>
+                      Drag and drop .nii / .nii.gz files onto the viewer, or
+                    </div>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      style={{ marginTop: '8px', width: '150px' }}
+                      onClick={openNiftiFileDialog}
+                    >
+                      Import NIfTI…
+                    </Button>
                   </div>
                 </Tab>
                 {plyFiles.length > 0 && (
@@ -4827,6 +5167,66 @@ const dropzoneStyle = {
   color: 'transparent',
 };
 
+const viewerToolbarStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: '10px',
+  left: '10px',
+  zIndex: 500,
+  display: 'flex',
+  gap: '4px',
+};
+
+const viewerToolbarButtonStyle: React.CSSProperties = {
+  width: '28px',
+  height: '28px',
+  padding: 0,
+  border: '1px solid rgba(255, 255, 255, 0.25)',
+  borderRadius: '6px',
+  backgroundColor: 'rgba(30, 38, 46, 0.75)',
+  color: '#d9e2ec',
+  fontSize: '13px',
+  lineHeight: 1,
+  cursor: 'pointer',
+};
+
+const dropOverlayStyle: React.CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  zIndex: 600,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  textAlign: 'center',
+  padding: '20px',
+  borderRadius: '15px',
+  border: '2px dashed #4b9fe0',
+  backgroundColor: 'rgba(20, 32, 44, 0.75)',
+  color: '#d9e2ec',
+  fontSize: '16px',
+  pointerEvents: 'none',
+};
+
+const importInfoToastStyle: React.CSSProperties = {
+  position: 'absolute',
+  bottom: '10px',
+  left: '10px',
+  right: '10px',
+  zIndex: 600,
+  padding: '6px 10px',
+  borderRadius: '8px',
+  backgroundColor: 'rgba(27, 67, 50, 0.9)',
+  color: '#d8f3dc',
+  fontSize: '12px',
+  textAlign: 'center',
+  pointerEvents: 'none',
+};
+
+const importErrorToastStyle: React.CSSProperties = {
+  ...importInfoToastStyle,
+  backgroundColor: 'rgba(120, 30, 30, 0.9)',
+  color: '#ffe3e3',
+};
+
 const viewerContainerStyle = {
   display: 'flex',
   flexDirection: 'row', // Ensures that the viewer and controls are side-by-side
@@ -4834,6 +5234,22 @@ const viewerContainerStyle = {
   justifyContent: 'space-between',
   height: '100%', // Adjust to fit the full height of the container
   width: '100%',
+};
+
+const geometryStatusStyle = {
+  color: '#d9e2ec',
+  backgroundColor: 'rgba(44, 62, 80, 0.9)',
+  fontSize: '12px',
+  lineHeight: 1.4,
+  padding: '6px 10px',
+  textAlign: 'center',
+};
+
+const geometryErrorStyle = {
+  ...geometryStatusStyle,
+  color: '#ffe8cc',
+  backgroundColor: 'rgba(120, 53, 15, 0.95)',
+  maxWidth: '500px',
 };
 
 const controlPanelStyle2 = {
