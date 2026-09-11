@@ -14,6 +14,8 @@ import { Dropdown, Form } from 'react-bootstrap';
 // Data and Components
 import electrodeModels from '../../assets/data/electrodeModels.json';
 import ManageElectrode from '../electrode/ManageElectrode';
+import { OSSSettings } from '../../utils/OSSSettings';
+import { changeStimulationIPG } from '../../utils/stimulationUnits';
 
 // Styles
 import '../../styles/StimulationSettings.css';
@@ -27,17 +29,27 @@ interface StimulationSettingsProps {
   IPG: string;
   setIPG: (value: string) => void;
   allQuantities: Record<string, any>;
-  setAllQuantities: (value: Record<string, any>) => void;
+  setAllQuantities: React.Dispatch<React.SetStateAction<Record<string, any>>>;
   allSelectedValues: Record<string, any>;
-  setAllSelectedValues: (value: Record<string, any>) => void;
+  setAllSelectedValues: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   allTotalAmplitudes: Record<string, any>;
-  setAllTotalAmplitudes: (value: Record<string, any>) => void;
+  setAllTotalAmplitudes: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   allTogglePositions: Record<string, any>;
-  setAllTogglePositions: (value: Record<string, any>) => void;
+  setAllTogglePositions: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   allPercAmpToggles: Record<string, any>;
-  setAllPercAmpToggles: (value: Record<string, any>) => void;
+  setAllPercAmpToggles: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   allVolAmpToggles: Record<string, any>;
-  setAllVolAmpToggles: (value: Record<string, any>) => void;
+  setAllVolAmpToggles: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   importCount: number;
   setImportCount: (value: number) => void;
   importDataTest: any;
@@ -53,7 +65,9 @@ interface StimulationSettingsProps {
   stimChanged: boolean;
   setStimChanged: (value: boolean) => void;
   allStimulationParameters: Record<string, any>;
-  setAllStimulationParameters: (value: Record<string, any>) => void;
+  setAllStimulationParameters: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   visModel: string;
   setVisModel: (value: string) => void;
   sessionTitle: string;
@@ -66,6 +80,8 @@ interface StimulationSettingsProps {
   type: string;
   allTemplateSpaces: number;
   setAllTemplateSpaces: (value: number) => void;
+  ossSettings: OSSSettings;
+  setOSSSettings: (value: OSSSettings) => void;
   showViewer: boolean;
   setShowViewer: (value: boolean) => void;
 }
@@ -117,6 +133,8 @@ function StimulationSettings({
   type,
   allTemplateSpaces,
   setAllTemplateSpaces,
+  ossSettings,
+  setOSSSettings,
   showViewer,
   setShowViewer,
 }: StimulationSettingsProps) {
@@ -269,6 +287,29 @@ function StimulationSettings({
     // console.log(stimDatasetList);
   };
 
+  const changeIPG = (selectedIPG: string) => {
+    if (selectedIPG === IPG) return;
+    const convert = (quantities: Record<string, any>) =>
+      changeStimulationIPG(
+        IPG,
+        selectedIPG,
+        quantities,
+        allSelectedValues,
+        allTotalAmplitudes,
+        allTogglePositions,
+        allPercAmpToggles,
+        allVolAmpToggles,
+      );
+    const { units, percentages, voltages } = convert(allQuantities);
+    // Convert every source before changing the hardware, including hidden
+    // sources and the other hemisphere. The parent merges each field update.
+    setAllQuantities((previous) => convert(previous).quantities);
+    setAllTogglePositions((previous) => ({ ...previous, ...units }));
+    setAllPercAmpToggles((previous) => ({ ...previous, ...percentages }));
+    setAllVolAmpToggles((previous) => ({ ...previous, ...voltages }));
+    setIPG(selectedIPG);
+  };
+
   const handleLeftElectrodeChange = (e) => {
     const selectedLeftElectrode = e.target.value;
     if (rightElectrode === '') {
@@ -276,20 +317,20 @@ function StimulationSettings({
         selectedLeftElectrode.includes('Boston') ||
         selectedLeftElectrode.includes('boston')
       ) {
-        setIPG('Boston');
+        changeIPG('Boston');
       } else if (
         selectedLeftElectrode.includes('Abbott') ||
         selectedLeftElectrode.includes('abbott')
       ) {
-        setIPG('Abbott');
+        changeIPG('Abbott');
       } else if (
         selectedLeftElectrode === 'medtronic_3389' ||
         selectedLeftElectrode === 'medtronic_3387' ||
         selectedLeftElectrode === 'medtronic_3391'
       ) {
-        setIPG('Medtronic_Activa');
+        changeIPG('Medtronic_Activa');
       } else {
-        setIPG('Medtronic_Percept');
+        changeIPG('Medtronic_Percept');
       }
     }
     setRightElectrode(selectedLeftElectrode);
@@ -304,11 +345,11 @@ function StimulationSettings({
     const selectedRightElectrode = e.target.value;
     if (leftElectrode === '') {
       if (selectedRightElectrode.includes('Boston')) {
-        setIPG('Boston');
+        changeIPG('Boston');
       } else if (selectedRightElectrode.includes('Medtronic')) {
-        setIPG('Medtronic_Percept');
+        changeIPG('Medtronic_Percept');
       } else if (selectedRightElectrode.includes('Abbott')) {
-        setIPG('Abbott');
+        changeIPG('Abbott');
       }
     }
     setRightElectrode(selectedRightElectrode);
@@ -318,7 +359,7 @@ function StimulationSettings({
 
   const handleIPGChange = (e) => {
     const selectedIPG = e.target.value;
-    setIPG(selectedIPG);
+    changeIPG(selectedIPG);
     // setAllQuantities({});
     // setAllSelectedValues({});
     // setAllTogglePositions({});
@@ -671,9 +712,7 @@ function StimulationSettings({
   return (
     <div>
       <div className="stimulationSettingsContainer">
-        <div
-          style={{ zIndex: 2, paddingLeft: '130px', paddingTop: '10px' }}
-        >
+        <div style={{ zIndex: 2, paddingLeft: '130px', paddingTop: '10px' }}>
           <Dropdown>
             <Dropdown.Toggle
               variant="secondary"
@@ -685,7 +724,7 @@ function StimulationSettings({
                 fontWeight: 'bold',
                 border: 'none',
                 width: '250px',
-                marginLeft: '-30px',
+                marginLeft: '10px',
               }}
             >
               Implanted Hardware
@@ -768,7 +807,7 @@ function StimulationSettings({
           {/* <h4 style={{ fontSize: '16px', marginBottom: '2px' }}>
             Contact Naming
           </h4> */}
-          <ButtonGroup style={{gap: '10px', marginLeft: '-20px'}}>
+          <ButtonGroup style={{ gap: '10px', marginLeft: '20px' }}>
             {namingConventionDef.map((name, idx) => (
               <ToggleButton
                 key={idx}
@@ -808,6 +847,7 @@ function StimulationSettings({
         {/* {(leftElectrode || rightElectrode) && ( */}
         <ManageElectrode
           IPG={IPG}
+          setIPG={setIPG}
           selectedElectrodeLeft={leftElectrode}
           selectedElectrodeRight={rightElectrode}
           // key={renderKey}
@@ -844,6 +884,8 @@ function StimulationSettings({
           type={type}
           allTemplateSpaces={allTemplateSpaces}
           setAllTemplateSpaces={setAllTemplateSpaces}
+          ossSettings={ossSettings}
+          setOSSSettings={setOSSSettings}
           showViewer={showViewer}
           setShowViewer={setShowViewer}
         />

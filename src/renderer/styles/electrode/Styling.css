@@ -349,12 +349,17 @@
   left: 50%;
   transform: translate(-50%, -36%);
   z-index: 1;
+  /* Keep the control inside the case oval. */
+  width: 84px;
+}
+.triple-toggle-ipg-boston-test > * {
+  width: 100% !important;
 }
 .triple-toggle-boston-test {
   position: absolute;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -46%);
+  transform: translate(-50%, -38%);
   z-index: 6;
 }
 

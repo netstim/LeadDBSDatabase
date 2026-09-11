@@ -1286,7 +1286,7 @@ function ManageElectrode({
           position: 'absolute',
           zIndex: 1,
           marginTop: '200px',
-          marginLeft: '30px',
+          marginLeft: '100px',
           width: '260px',
           display: 'flex',
           flexDirection: 'column',

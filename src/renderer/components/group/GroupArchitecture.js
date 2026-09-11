@@ -347,7 +347,7 @@ function GroupArchitecture({
             marginBottom: '-110px',
           }),
           marginTop: '-30px',
-          marginLeft: '130px',
+          marginLeft: '170px',
           zIndex: 5,
         }}
       >
