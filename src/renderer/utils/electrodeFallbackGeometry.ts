@@ -385,6 +385,58 @@ const principalAxis = (
   ];
 };
 
+// Directional segment plates cover an arc of the shaft circumference;
+// three 120° segments with insulation gaps between them.
+const SEGMENT_ARC = THREE.MathUtils.degToRad(100);
+const RING_RADIAL_THRESHOLD = 0.2;
+
+/**
+ * A contact rendered as a plate: a shallow cylindrical band around the shaft
+ * axis. Ring contacts wrap the full circumference; directional segments
+ * cover an arc facing their radial offset direction.
+ */
+const contactPlate = (
+  levelCenter: THREE.Vector3,
+  axisDirection: THREE.Vector3,
+  radialDirection: THREE.Vector3 | null,
+  radius: number,
+  length: number,
+): THREE.BufferGeometry => {
+  const isSegment = radialDirection !== null;
+  const geometry = new THREE.CylinderGeometry(
+    radius,
+    radius,
+    length,
+    isSegment ? 12 : 24,
+    1,
+    false,
+    isSegment ? -SEGMENT_ARC / 2 : 0,
+    isSegment ? SEGMENT_ARC : Math.PI * 2,
+  );
+
+  // Local +Y is the cylinder axis; theta = 0 faces local +Z, so build a
+  // basis that maps +Y onto the shaft and +Z onto the radial direction.
+  const yAxis = axisDirection.clone().normalize();
+  let zAxis = radialDirection
+    ? radialDirection.clone().normalize()
+    : new THREE.Vector3(1, 0, 0);
+  // Re-orthogonalize against the shaft axis.
+  zAxis = zAxis
+    .sub(yAxis.clone().multiplyScalar(zAxis.dot(yAxis)))
+    .normalize();
+  if (!Number.isFinite(zAxis.x) || zAxis.lengthSq() < 0.5) {
+    zAxis = Math.abs(yAxis.z) < 0.9
+      ? new THREE.Vector3(0, 0, 1).cross(yAxis).normalize()
+      : new THREE.Vector3(1, 0, 0).cross(yAxis).normalize();
+  }
+  const xAxis = new THREE.Vector3().crossVectors(yAxis, zAxis).normalize();
+
+  const basis = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+  basis.setPosition(levelCenter);
+  geometry.applyMatrix4(basis);
+  return geometry;
+};
+
 const cylinderBetween = (
   start: THREE.Vector3,
   end: THREE.Vector3,
@@ -447,12 +499,14 @@ export const createFallbackElectrodeGeometry = (
       markerAxis ??
       tierAxis(side.contacts, metadata.etageidx) ??
       principalAxis(side.contacts);
+    let axisDirection: THREE.Vector3 | null = null;
     if (axis) {
       // Extend the shaft well past the proximal marker (like a real lead
       // running toward the burr hole) and slightly past the distal tip.
       const direction = axis[1].clone().sub(axis[0]);
       const contactSpan = direction.length();
       direction.normalize();
+      axisDirection = direction;
       const start = axis[0].clone().addScaledVector(direction, -leadRadius);
       const end = axis[1]
         .clone()
@@ -461,7 +515,34 @@ export const createFallbackElectrodeGeometry = (
       if (shaft) pieces.push(addVertexColor(shaft, leadColor));
     }
 
+    const contactLength = boundedMetadataNumber(
+      metadata.contact_length,
+      1.5,
+      0.3,
+      6,
+    );
+    const axisStart = axis ? axis[0] : null;
     side.contacts.forEach((contactPosition) => {
+      const position = new THREE.Vector3(...contactPosition);
+      if (axisDirection && axisStart) {
+        // Project the contact onto the shaft axis; the radial remainder
+        // decides between a full ring and a directional segment plate.
+        const along = position.clone().sub(axisStart).dot(axisDirection);
+        const levelCenter = axisStart
+          .clone()
+          .addScaledVector(axisDirection, along);
+        const radial = position.clone().sub(levelCenter);
+        const plate = contactPlate(
+          levelCenter,
+          axisDirection,
+          radial.length() > RING_RADIAL_THRESHOLD ? radial : null,
+          contactRadius,
+          contactLength,
+        );
+        pieces.push(addVertexColor(plate, contactColor));
+        return;
+      }
+      // Without any usable axis, fall back to a small marker sphere.
       const contact = new THREE.SphereGeometry(contactRadius, 16, 12);
       contact.translate(...contactPosition);
       pieces.push(addVertexColor(contact, contactColor));

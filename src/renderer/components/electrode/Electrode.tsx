@@ -2526,8 +2526,10 @@ function Electrode({
     }
   }
 
+  // The on-screen arrows are intentionally inverted relative to the tier
+  // order: ↑ steers the current toward the distal tip (contact 1).
   const handlePercAmpChangeUp = () => {
-    applyDirectionalSteering('up');
+    applyDirectionalSteering('down');
   };
 
   const handlePercAmpChangeClockwise = () => {
@@ -2539,7 +2541,7 @@ function Electrode({
   };
 
   const handlePercAmpChangeDown = () => {
-    applyDirectionalSteering('down');
+    applyDirectionalSteering('up');
   };
 
   useEffect(() => {
@@ -3390,7 +3392,6 @@ function Electrode({
                   boxShadow: '0 4px 8px rgba(0, 0, 0, 0.4)',
                   border: 'none',
                   marginRight: '10px',
-                  marginLeft: '-10px',
                 }}
               >
                 Split Even
@@ -3444,7 +3445,7 @@ function Electrode({
                     variant="secondary"
                     onClick={handlePercAmpChangeUp}
                     disabled={steeringUnit === 'V'}
-                    title="Move 10% toward the proximal end"
+                    title="Shift the current 10% of a level toward the tip"
                     style={{
                       borderRadius: '10px',
                       backgroundColor: 'white',
@@ -3476,7 +3477,7 @@ function Electrode({
                     variant="secondary"
                     onClick={handlePercAmpChangeDown}
                     disabled={steeringUnit === 'V'}
-                    title="Move 10% toward the distal end"
+                    title="Shift the current 10% of a level away from the tip"
                     style={{
                       borderRadius: '10px',
                       backgroundColor: 'white',

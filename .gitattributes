@@ -10,3 +10,9 @@
 *.ttf   binary
 *.woff  binary
 *.woff2 binary
+*.mat   binary
+*.nii   binary
+*.gz    binary
+*.xlsx  binary
+*.ply   binary
+*.pdf   binary

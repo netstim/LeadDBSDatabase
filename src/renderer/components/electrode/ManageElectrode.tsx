@@ -1,6 +1,6 @@
 /**
  * ManageElectrode Component
- * 
+ *
  * This component manages electrode selection, configuration, and stimulation parameters.
  * It provides a tabbed interface for different electrode types and handles the
  * complex state management for stimulation programming.
@@ -18,7 +18,19 @@ import '../../styles/TabbedElectrodeIPGSelection.css';
 
 // Data and Components
 import electrodeModels from '../../assets/data/electrodeModels.json';
+import { OSSSettings, normalizeOSSSettings } from '../../utils/OSSSettings';
 import Electrode from './Electrode';
+import { getSteeringUnit } from '../../utils/currentSteering';
+import {
+  exportSteeringQuantities,
+  importedIPG,
+  importSteeringSource,
+  unitTogglePositions,
+  writeSteeringMetadata,
+} from '../../utils/stimulationUnits';
+import withoutStimulationContacts, {
+  LEAD_DBS_SOURCE_INDICES,
+} from '../../utils/leadDbsSources';
 
 // Type definitions
 interface HemisphereData {
@@ -33,26 +45,39 @@ interface HemisphereState {
 
 interface ManageElectrodeProps {
   IPG: string;
+  setIPG?: (value: string) => void;
   selectedElectrodeLeft: string;
   selectedElectrodeRight: string;
   allQuantities: Record<string, any>;
-  setAllQuantities: (value: Record<string, any>) => void;
+  setAllQuantities: React.Dispatch<React.SetStateAction<Record<string, any>>>;
   allSelectedValues: Record<string, any>;
-  setAllSelectedValues: (value: Record<string, any>) => void;
+  setAllSelectedValues: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   allTotalAmplitudes: Record<string, any>;
-  setAllTotalAmplitudes: (value: Record<string, any>) => void;
+  setAllTotalAmplitudes: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   allStimulationParameters: Record<string, any>;
-  setAllStimulationParameters: (value: Record<string, any>) => void;
+  setAllStimulationParameters: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   visModel: string;
   setVisModel: (value: string) => void;
   sessionTitle: string;
   setSessionTitle: (value: string) => void;
   allTogglePositions: Record<string, any>;
-  setAllTogglePositions: (value: Record<string, any>) => void;
+  setAllTogglePositions: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   allPercAmpToggles: Record<string, any>;
-  setAllPercAmpToggles: (value: Record<string, any>) => void;
+  setAllPercAmpToggles: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   allVolAmpToggles: Record<string, any>;
-  setAllVolAmpToggles: (value: Record<string, any>) => void;
+  setAllVolAmpToggles: React.Dispatch<
+    React.SetStateAction<Record<string, any>>
+  >;
   filePath: string;
   setFilePath: (value: string) => void;
   matImportFile: any;
@@ -68,10 +93,13 @@ interface ManageElectrodeProps {
   setAllTemplateSpaces: (value: number) => void;
   showViewer: boolean;
   setShowViewer: (value: boolean) => void;
+  ossSettings?: OSSSettings;
+  setOSSSettings?: (value: OSSSettings) => void;
 }
 
 function ManageElectrode({
   IPG,
+  setIPG,
   selectedElectrodeLeft,
   selectedElectrodeRight,
   allQuantities,
@@ -107,6 +135,8 @@ function ManageElectrode({
   setAllTemplateSpaces,
   showViewer,
   setShowViewer,
+  ossSettings: controlledOSSSettings,
+  setOSSSettings: setControlledOSSSettings,
 }: ManageElectrodeProps) {
   // Refs
   const testElectrodeRef = React.createRef();
@@ -129,7 +159,34 @@ function ManageElectrode({
   });
 
   const [key, setKey] = useState<string>('5');
+  const activeElectrode =
+    Number(key) > 4
+      ? selectedElectrodeRight || selectedElectrodeLeft
+      : selectedElectrodeLeft || selectedElectrodeRight;
   const [visualizationModel, setVisualizationModel] = useState<string>('3');
+  const [localOSSSettings, setLocalOSSSettings] = useState<OSSSettings>(() =>
+    normalizeOSSSettings(templateS?.ossSettings),
+  );
+  const hasControlledOSSSettings =
+    controlledOSSSettings !== undefined &&
+    setControlledOSSSettings !== undefined;
+  const ossSettings =
+    hasControlledOSSSettings && controlledOSSSettings
+      ? controlledOSSSettings
+      : localOSSSettings;
+  const updateOSSSettings = (settings: OSSSettings) => {
+    const normalizedSettings = normalizeOSSSettings(settings);
+    setLocalOSSSettings(normalizedSettings);
+    setControlledOSSSettings?.(normalizedSettings);
+  };
+  const [saveStatus, setSaveStatus] = useState<string>('');
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!hasControlledOSSSettings) {
+      setLocalOSSSettings(normalizeOSSSettings(templateS?.ossSettings));
+    }
+  }, [hasControlledOSSSettings, templateS?.ossSettings]);
 
   // Constants
   const hemisphereButtons = [
@@ -188,7 +245,8 @@ function ManageElectrode({
     allQuantities[key] = testElectrodeRef.current.getStateQuantities();
     allSelectedValues[key] = testElectrodeRef.current.getStateSelectedValues();
     allTotalAmplitudes[key] = testElectrodeRef.current.getStateAmplitude();
-    allStimulationParameters[key] = testElectrodeRef.current.getStateStimulationParameters();
+    allStimulationParameters[key] =
+      testElectrodeRef.current.getStateStimulationParameters();
 
     try {
       visModel[key] = testElectrodeRef.current.getStateVisModel();
@@ -246,7 +304,9 @@ function ManageElectrode({
    * @param amplitudeList - The amplitude list to process
    * @returns Processed amplitude list for export
    */
-  const handleExportAmplitude = (amplitudeList: Record<string, any>): number[] => {
+  const handleExportAmplitude = (
+    amplitudeList: Record<string, any>,
+  ): number[] => {
     const exportAmplitudeList: number[] = [];
     Object.keys(amplitudeList).forEach((key) => {
       exportAmplitudeList.push(parseFloat(amplitudeList[key]));
@@ -262,13 +322,21 @@ function ManageElectrode({
    * @returns Updated quantities with percentage values
    */
   const calculatePercentageFromAmplitude = (
-    quantities: Record<string, any>, 
-    totalAmplitude: number
+    quantities: Record<string, any>,
+    totalAmplitude: number,
   ): Record<string, any> => {
     const updatedQuantities = { ...quantities };
+    if (!Number.isFinite(totalAmplitude) || totalAmplitude <= 0) {
+      Object.keys(updatedQuantities).forEach((element) => {
+        updatedQuantities[element] = 0;
+      });
+      return updatedQuantities;
+    }
     Object.keys(updatedQuantities).forEach((element) => {
-      updatedQuantities[element] =
-        (parseFloat(updatedQuantities[element]) * 100) / totalAmplitude;
+      const contactAmplitude = parseFloat(updatedQuantities[element]);
+      updatedQuantities[element] = Number.isFinite(contactAmplitude)
+        ? (contactAmplitude * 100) / totalAmplitude
+        : 0;
     });
     console.log(updatedQuantities);
     return updatedQuantities;
@@ -279,7 +347,9 @@ function ManageElectrode({
    * @param quantities - The quantities object to update
    * @returns Updated quantities with voltage values
    */
-  const calculateVoltageFromAmplitude = (quantities: Record<string, any>): Record<string, any> => {
+  const calculateVoltageFromAmplitude = (
+    quantities: Record<string, any>,
+  ): Record<string, any> => {
     const updatedQuantities = { ...quantities };
     Object.keys(updatedQuantities).forEach((element) => {
       if (quantities[element] !== 0) {
@@ -290,45 +360,15 @@ function ManageElectrode({
   };
 
   const handleTogglePositions = () => {
-    let outputQuantities = {};
-    console.log(allQuantities);
-    console.log(allTotalAmplitudes);
-    const updatedQuantities = { ...allQuantities };
-    console.log(allTogglePositions);
-    Object.keys(allTogglePositions).forEach((position) => {
-      if (allTogglePositions[position] === 'mA') {
-        console.log('position', position);
-        console.log('quantity: ', allTogglePositions);
-        console.log(allTotalAmplitudes[position]);
-        console.log(allQuantities[position]);
-        outputQuantities = calculatePercentageFromAmplitude(
-          allQuantities[position],
-          parseFloat(allTotalAmplitudes[position]),
-        );
-        // const updatedQuantities = {
-        //   ...allQuantities,
-        //   [position]: outputQuantities,
-        // };
-        updatedQuantities[position] = outputQuantities;
-        console.log('updaredQuantities: ', updatedQuantities);
-        outputQuantities = updatedQuantities;
-      } else if (allTogglePositions[position] === 'V') {
-        outputQuantities = calculateVoltageFromAmplitude(
-          allQuantities[position],
-        );
-        // const updatedQuantities = {
-        //   ...allQuantities,
-        //   [position]: outputQuantities,
-        // };
-        updatedQuantities[position] = outputQuantities;
-        outputQuantities = updatedQuantities;
-      } else {
-        outputQuantities[position] = allQuantities[position];
-      }
-      // return '';
-    });
-    // console.log(updatedQuantities);
-    return outputQuantities;
+    return exportSteeringQuantities(
+      allQuantities,
+      allTotalAmplitudes,
+      allTogglePositions,
+      allSelectedValues,
+      IPG,
+      allPercAmpToggles,
+      allVolAmpToggles,
+    );
   };
 
   // const handleIPGForOutput = () => {
@@ -447,6 +487,7 @@ function ManageElectrode({
     }
 
     data.S.model = exportVisModel;
+    data.S.ossSettings = normalizeOSSSettings(ossSettings);
 
     // for (let j = 1; j < 5; j++) {
     //   let dynamicKey2 = `Ls${j}`;
@@ -583,10 +624,9 @@ function ManageElectrode({
         data.S[dynamicKey2].pulsewidth = 60;
       }
     }
-    const sourcesArray = activeArray;
     const rightLength = newActiveArray.length;
-    data.S.sources = sourcesArray;
-    data.S.active = [leftLength, rightLength];
+    data.S.sources = [...LEAD_DBS_SOURCE_INDICES];
+    data.S.active = [1, 1];
     console.log(data);
     return data;
     // data.S.activecontacts = activeContacts(allSelectedValues[1]);
@@ -604,10 +644,9 @@ function ManageElectrode({
     const rightHemiArr = [];
     console.log('Template S: ', templateS);
     const data = {
-      S: {
-        ...templateS,
-      },
+      S: JSON.parse(JSON.stringify(templateS || {})),
     };
+    data.S.amplitude = [Array(4).fill(0), Array(4).fill(0)];
     console.log(data);
     // data.S.elmodel = [selectedElectrodeLeft, selectedElectrodeRight];
     const programs = Object.keys(allQuantities);
@@ -615,7 +654,16 @@ function ManageElectrode({
     console.log('Programs: ', programs);
     console.log('length', programs[0]);
 
-    const loopSize = Object.keys(allQuantities[firstProgram]).length;
+    const configuredContactCount = Math.max(
+      Number(electrodeModels[selectedElectrodeLeft]?.numel) || 0,
+      Number(electrodeModels[selectedElectrodeRight]?.numel) || 0,
+    );
+    const loopSize =
+      (configuredContactCount ||
+        Math.max(
+          0,
+          Object.keys(allQuantities[firstProgram] || {}).length - 1,
+        )) + 1;
     // console.log('loopSize: ', loopSize);
     // data.S.label = 'Num1';
     const activeArray = [];
@@ -623,6 +671,7 @@ function ManageElectrode({
     data.S.activecontacts = {};
     for (let j = 1; j < 5; j++) {
       const dynamicKey2 = `Ls${j}`;
+      data.S[dynamicKey2] = withoutStimulationContacts(data.S[dynamicKey2]);
       if (allSelectedValues[j] && updatedOutputQuantity[j]) {
         // Need to change the i = 9 to number of electrodes to accomodate for 16 contact electrodes
         for (let i = 1; i < loopSize; i++) {
@@ -636,13 +685,13 @@ function ManageElectrode({
           }
           const dynamicKey = `k${i}`;
           data.S[dynamicKey2][dynamicKey] = {
-            perc: parseFloat(updatedOutputQuantity[j][i]),
+            perc: Number(updatedOutputQuantity[j][i] ?? 0),
             pol: polarity,
             imp: 1,
           };
         }
         data.S[dynamicKey2].case = {
-          perc: parseFloat(updatedOutputQuantity[j][0]),
+          perc: Number(updatedOutputQuantity[j][0] ?? 0),
           pol: translatePolarity(allSelectedValues[j][0]),
         };
         data.S[dynamicKey2].amp = parseFloat(allTotalAmplitudes[j]);
@@ -653,7 +702,14 @@ function ManageElectrode({
         //   allStimulationParameters[j].parameter1,
         // );
         data.S[dynamicKey2].va = 2;
-        if (allPercAmpToggles[j] === 'V') {
+        if (
+          getSteeringUnit(
+            IPG,
+            allPercAmpToggles[j],
+            allVolAmpToggles[j],
+            allTogglePositions[j],
+          ) === 'V'
+        ) {
           data.S[dynamicKey2].va = 1;
         }
         activeArray.push(j);
@@ -688,6 +744,7 @@ function ManageElectrode({
 
     for (let j = 1; j < 5; j++) {
       const dynamicKey2 = `Rs${j}`;
+      data.S[dynamicKey2] = withoutStimulationContacts(data.S[dynamicKey2]);
       if (allSelectedValues[j + 4] && updatedOutputQuantity[j + 4]) {
         for (let i = 1; i < loopSize; i++) {
           let polarity = 0;
@@ -700,13 +757,13 @@ function ManageElectrode({
           }
           const dynamicKey = `k${i}`;
           data.S[dynamicKey2][dynamicKey] = {
-            perc: parseFloat(updatedOutputQuantity[j + 4][i]),
+            perc: Number(updatedOutputQuantity[j + 4][i] ?? 0),
             pol: polarity,
             imp: 1,
           };
         }
         data.S[dynamicKey2].case = {
-          perc: parseFloat(updatedOutputQuantity[j + 4][0]),
+          perc: Number(updatedOutputQuantity[j + 4][0] ?? 0),
           pol: translatePolarity(allSelectedValues[j + 4][0]),
         };
         data.S[dynamicKey2].amp = parseFloat(allTotalAmplitudes[j + 4]);
@@ -717,7 +774,14 @@ function ManageElectrode({
         //   allStimulationParameters[j + 4].parameter1,
         // );
         data.S[dynamicKey2].va = 2;
-        if (allPercAmpToggles[j + 4] === 'V') {
+        if (
+          getSteeringUnit(
+            IPG,
+            allPercAmpToggles[j + 4],
+            allVolAmpToggles[j + 4],
+            allTogglePositions[j + 4],
+          ) === 'V'
+        ) {
           data.S[dynamicKey2].va = 1;
         }
         activeArray.push(j + 4);
@@ -773,9 +837,10 @@ function ManageElectrode({
     // data.S.amplitude = { rightAmplitude, leftAmplitude };
     // data.S.amplitude = exportAmplitudeData;
     // console.log(exportAmplitudeData);
-    const sourcesArray = activeArray;
     const rightLength = newActiveArray.length;
-    data.S.sources = sourcesArray;
+    // Source numbers are 1-4 on each side in Lead-DBS. The UI's right-side
+    // program slots (5-8) are state keys, not valid Lead-DBS source numbers.
+    data.S.sources = [...LEAD_DBS_SOURCE_INDICES];
     // data.S.active = [leftLength, rightLength];
     data.S.active = [1, 1];
     // data.S.activecontacts = activeContacts(allSelectedValues[1]);
@@ -813,6 +878,7 @@ function ManageElectrode({
     }
     // console.log('export vis model', exportVisModel);
     data.S.model = exportVisModel;
+    data.S.ossSettings = normalizeOSSSettings(ossSettings);
     // data.S.estimateInTemplate = exportTemplateSpace;
     // if (Array.isArray(data.S.activecontacts) && data.S.activecontacts.length > 0 && data.S.activecontacts[0] === undefined) {
     //   data.S.activecontacts.shift();
@@ -830,6 +896,15 @@ function ManageElectrode({
     const combinedRightContacts = combineBinary(rightSideContacts);
 
     data.S.activecontacts = [combinedRightContacts, combinedLeftContacts];
+    writeSteeringMetadata(
+      data.S,
+      IPG,
+      allQuantities,
+      allTotalAmplitudes,
+      allTogglePositions,
+      allPercAmpToggles,
+      allVolAmpToggles,
+    );
     data.S.estimateInTemplate = allTemplateSpaces;
     console.log(data.S.activecontacts);
     return data;
@@ -855,33 +930,70 @@ function ManageElectrode({
     }
   };
 
-  const sendDataToMain = () => {
+  const sendDataToMain = async () => {
+    if (isSaving) return;
     const outputData = gatherExportedData6();
     console.log('OUTPUTDATA: ', outputData);
     console.log('Historical: ', historical);
     if (mode === 'stimulate') {
-      window.electron.ipcRenderer.sendMessage(
-        'save-file-stimulate',
-        filePath,
-        outputData,
-      );
-      window.electron.ipcRenderer.sendMessage('close-window');
+      setIsSaving(true);
+      setSaveStatus('Saving stimulation…');
+      try {
+        const result = await window.electron.ipcRenderer.invoke(
+          'save-file-stimulate',
+          filePath,
+          outputData,
+        );
+        if (!result?.success) {
+          throw new Error(
+            result.error || 'The stimulation could not be saved.',
+          );
+        }
+        setSaveStatus('Stimulation saved. Closing…');
+        window.electron.ipcRenderer.sendMessage('close-window');
+      } catch (error) {
+        console.error('Error saving stimulation:', error);
+        setSaveStatus(
+          error instanceof Error
+            ? `Save failed: ${error.message}`
+            : 'The stimulation could not be saved.',
+        );
+      } finally {
+        setIsSaving(false);
+      }
       return;
     }
-    window.electron.ipcRenderer.sendMessage(
-      'save-file',
-      filePath,
-      outputData,
-      historical,
-    );
-    // window.electron.ipcRenderer.sendMessage('close-window');
-    // window.electron.ipcRenderer.sendMessage('close-window');
-
-    // Listen for a response from the main process
-    window.electron.ipcRenderer.on('window-closed', (event, arg) => {
-      console.log(arg); // Prints "Window closed" if received from the main process
-    });
+    setIsSaving(true);
+    setSaveStatus('Saving stimulation settings…');
+    try {
+      const result = await window.electron.ipcRenderer.invoke(
+        'save-file',
+        filePath,
+        outputData,
+        historical,
+      );
+      if (!result?.success) {
+        throw new Error(result.error || 'The settings could not be saved.');
+      }
+      setSaveStatus('Stimulation settings saved.');
+    } catch (error) {
+      console.error('Error saving stimulation settings:', error);
+      setSaveStatus(
+        error instanceof Error
+          ? `Save failed: ${error.message}`
+          : 'The settings could not be saved.',
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
+
+  let saveButtonLabel = 'Save';
+  if (isSaving) {
+    saveButtonLabel = 'Saving…';
+  } else if (mode === 'stimulate') {
+    saveButtonLabel = 'Stimulate and Close';
+  }
 
   const closeFunction = () => {
     window.electron.ipcRenderer.sendMessage('close-window-new');
@@ -895,15 +1007,24 @@ function ManageElectrode({
   const initializeElectrodeVariables = () => {
     console.log('Here');
     console.log(electrodeModels);
-    const elspec = electrodeModels[selectedElectrodeLeft];
+    const elspec = electrodeModels[activeElectrode];
+    if (!elspec) return;
     console.log('Electrode: ', selectedElectrodeLeft);
     console.log('Elspec: ', elspec);
     const initialSelectedValues = { 0: 'right' };
     const initialQuantityBoston = { 0: 100 };
     const initialQuantity = { 0: 0 };
     const initialAnimation = { 0: null };
-    const initialpercAmpToggle = allPercAmpToggles[key] || 'left';
-    const initialVolAmpToggle = allVolAmpToggles[key] || 'center';
+    const initialUnit = getSteeringUnit(
+      IPG,
+      allPercAmpToggles[key],
+      allVolAmpToggles[key],
+      allTogglePositions[key],
+    );
+    const {
+      percAmpToggle: initialpercAmpToggle,
+      volAmpToggle: initialVolAmpToggle,
+    } = unitTogglePositions(initialUnit);
     const initialVisModel = visModel || '3';
     const initialTotalAmplitude = 0;
     for (let i = 0; i < elspec.numel; i++) {
@@ -914,45 +1035,52 @@ function ManageElectrode({
     }
     console.log('Initial quantity: ', initialQuantity);
     const newInitialQuantities =
-      IPG === 'Boston' ? initialQuantityBoston : initialQuantity;
+      initialUnit === '%' ? initialQuantityBoston : initialQuantity;
 
     console.log(
       'Initialization test: ',
       electrodeModels[selectedElectrodeLeft],
     );
     if (!allQuantities[key]) {
-      setAllQuantities({
-        ...allQuantities,
+      setAllQuantities((previous) => ({
+        ...previous,
         [key]: newInitialQuantities,
-      });
+      }));
     }
 
     if (!allSelectedValues[key]) {
-      setAllSelectedValues({
-        ...allSelectedValues,
+      setAllSelectedValues((previous) => ({
+        ...previous,
         [key]: initialSelectedValues,
-      });
+      }));
     }
 
     if (!allPercAmpToggles[key]) {
-      setAllPercAmpToggles({
-        ...allPercAmpToggles,
+      setAllPercAmpToggles((previous) => ({
+        ...previous,
         [key]: initialpercAmpToggle,
-      });
+      }));
     }
 
     if (!allVolAmpToggles[key]) {
-      setAllVolAmpToggles({
-        ...allVolAmpToggles,
+      setAllVolAmpToggles((previous) => ({
+        ...previous,
         [key]: initialVolAmpToggle,
-      });
+      }));
     }
 
-    if (!allTotalAmplitudes[key]) {
-      setAllTotalAmplitudes({
-        ...allTotalAmplitudes,
+    if (!allTogglePositions[key]) {
+      setAllTogglePositions((previous) => ({
+        ...previous,
+        [key]: initialUnit,
+      }));
+    }
+
+    if (allTotalAmplitudes[key] === undefined) {
+      setAllTotalAmplitudes((previous) => ({
+        ...previous,
         [key]: initialTotalAmplitude,
-      });
+      }));
     }
 
     // For visModel, ensure it's set only if it's not already set
@@ -963,7 +1091,7 @@ function ManageElectrode({
   };
 
   useEffect(() => {
-    if (selectedElectrodeLeft) {
+    if (activeElectrode) {
       initializeElectrodeVariables();
     }
   }, [
@@ -974,40 +1102,42 @@ function ManageElectrode({
     electrodeModels,
   ]);
 
-  const gatherImportedData = (jsonData) => {
-    const newQuantities = {
-      1: {},
-      2: {},
-      3: {},
-      4: {},
-      5: {},
-      6: {},
-      7: {},
-      8: {},
-    };
-    const newAllQuantities = {};
-
-    for (let j = 1; j < 5; j++) {
-      const dynamicKey2 = `Ls${j}`;
-      for (let i = 0; i < 9; i++) {
-        const dynamicKey = `k${i + 7}`;
-        // let nestedData = jsonData.S[dynamicKey2][dynamicKey];
-        const nestedData = jsonData.S[dynamicKey2][dynamicKey];
-        // console.log('nestred data: ', nestedData);
-        if (jsonData.S[dynamicKey2][dynamicKey]) {
-          newQuantities[j][i] = parseFloat(
-            jsonData.S[dynamicKey2][dynamicKey].perc,
-          );
-          newQuantities[j][0] = parseFloat(jsonData.S[dynamicKey2].case.perc);
-          // console.log('perc', nestedData.perc);
-          // newQuantities.S[dynamicKey2][dynamicKey]
-        }
-        // console.log('new quantitites;', newQuantities);
-      }
-      newAllQuantities[j] = newQuantities[j];
+  const gatherImportedData = (jsonData: any) => {
+    const stimulation = jsonData?.S || jsonData;
+    if (!stimulation?.Ls1 && !stimulation?.Rs1) {
+      setSaveStatus(
+        'Import failed: the file does not contain Lead-DBS stimulation sources.',
+      );
+      return;
     }
-    console.log('newQuantities: ', newAllQuantities);
-    setAllQuantities(newAllQuantities);
+    const nextIPG = setIPG ? importedIPG(stimulation, IPG) : IPG;
+    const quantities: Record<string, any> = {};
+    const selected: Record<string, any> = {};
+    const amplitudes: Record<string, any> = {};
+    const units: Record<string, any> = {};
+    const percentages: Record<string, any> = {};
+    const voltages: Record<string, any> = {};
+    for (let position = 1; position <= 8; position += 1) {
+      const source = importSteeringSource(
+        stimulation,
+        position,
+        nextIPG,
+        stimulation.amplitude?.[position > 4 ? 0 : 1]?.[(position - 1) % 4],
+      );
+      quantities[position] = source.quantities;
+      selected[position] = source.selectedValues;
+      amplitudes[position] = source.totalAmplitude;
+      units[position] = source.unit;
+      percentages[position] = source.percAmpToggle;
+      voltages[position] = source.volAmpToggle;
+    }
+    setAllQuantities(quantities);
+    setAllSelectedValues(selected);
+    setAllTotalAmplitudes(amplitudes);
+    setAllTogglePositions(units);
+    setAllPercAmpToggles(percentages);
+    setAllVolAmpToggles(voltages);
+    setIPG?.(nextIPG);
   };
 
   useEffect(() => {
@@ -1025,35 +1155,40 @@ function ManageElectrode({
   const [tempParamInput, setTempParamInput] = useState('0-/C+; 2mA');
 
   const handleQuantityChange = (updatedQuantities) => {
-    const updatedAllQuantities = {
-      ...allQuantities,
-      [key]: updatedQuantities,
-    };
-    setAllQuantities(updatedAllQuantities);
+    setAllQuantities((previous) => ({
+      ...previous,
+      [key]:
+        typeof updatedQuantities === 'function'
+          ? updatedQuantities(previous[key])
+          : updatedQuantities,
+    }));
   };
 
   const handleSelectedValueChange = (updatedSelectedValues) => {
-    const updatedAllSelectedValues = {
-      ...allSelectedValues,
-      [key]: updatedSelectedValues,
-    };
-    setAllSelectedValues(updatedAllSelectedValues);
+    setAllSelectedValues((previous) => ({
+      ...previous,
+      [key]:
+        typeof updatedSelectedValues === 'function'
+          ? updatedSelectedValues(previous[key])
+          : updatedSelectedValues,
+    }));
   };
 
   const handleAmplitudeChange = (updatedAmplitude) => {
-    const updatedAllTotalAmplitudes = {
-      ...allTotalAmplitudes,
+    setAllTotalAmplitudes((previous) => ({
+      ...previous,
       [key]: updatedAmplitude,
-    };
-    setAllTotalAmplitudes(updatedAllTotalAmplitudes);
+    }));
   };
 
   const handleParameterChange = (updatedParameters) => {
-    const updatedAllParameters = {
-      ...allStimulationParameters,
-      [key]: updatedParameters,
-    };
-    setAllStimulationParameters(updatedAllParameters);
+    setAllStimulationParameters((previous) => ({
+      ...previous,
+      [key]:
+        typeof updatedParameters === 'function'
+          ? updatedParameters(previous[key])
+          : updatedParameters,
+    }));
   };
 
   const handleVisModelChange = (updatedVisModel) => {
@@ -1063,28 +1198,24 @@ function ManageElectrode({
   const handleTogglePositionChange = (updatedTogglePosition) => {
     console.log('Updated toggle position: ', allTogglePositions);
     console.log('Key: ', key);
-    const updatedAllTogglePositions = {
-      ...allTogglePositions,
+    setAllTogglePositions((previous) => ({
+      ...previous,
       [key]: updatedTogglePosition,
-    };
-    console.log('Updated all toggle positions: ', updatedAllTogglePositions);
-    setAllTogglePositions(updatedAllTogglePositions);
+    }));
   };
 
   const handlePercAmpToggleChange = (updatedPercAmpToggle) => {
-    const updatedAllPercAmpToggles = {
-      ...allPercAmpToggles,
+    setAllPercAmpToggles((previous) => ({
+      ...previous,
       [key]: updatedPercAmpToggle,
-    };
-    setAllPercAmpToggles(updatedAllPercAmpToggles);
+    }));
   };
 
   const handleVolAmpToggleChange = (updatedVolAmpToggle) => {
-    const updatedAllVolAmpToggles = {
-      ...allVolAmpToggles,
+    setAllVolAmpToggles((previous) => ({
+      ...previous,
       [key]: updatedVolAmpToggle,
-    };
-    setAllVolAmpToggles(updatedAllVolAmpToggles);
+    }));
   };
 
   const handleTemplateSpaceChange = (updatedTemplateSpace) => {
@@ -1150,8 +1281,19 @@ function ManageElectrode({
         <Button onClick={() => handleTabChange('5')}>Right Hemisphere</Button>
         <Button onClick={() => handleTabChange('1')}>Left Hemisphere</Button>
       </ButtonGroup> */}
-      <div style={{ position: 'absolute', zIndex: 1, marginTop: '200px', marginLeft: '30px' }}>
-        <p style={{ fontSize: '18px', marginBottom: '-10px' }}>Hemisphere</p>
+      <div
+        style={{
+          position: 'absolute',
+          zIndex: 1,
+          marginTop: '200px',
+          marginLeft: '30px',
+          width: '260px',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+        }}
+      >
+        <p style={{ fontSize: '18px', marginBottom: '-4px' }}>Hemisphere</p>
         <ButtonGroup className="mb-2" style={{ gap: '10px' }}>
           {hemisphereButtons.map((radio, idx) => (
             <ToggleButton
@@ -1164,7 +1306,7 @@ function ManageElectrode({
               onChange={(e) => handleTabChange(e.currentTarget.value)}
               style={{
                 borderRadius: '20px',
-                width: '150px',
+                width: '110px',
                 backgroundColor: 'white',
                 color: 'navy',
                 fontWeight: 'bold',
@@ -1184,13 +1326,12 @@ function ManageElectrode({
             </ToggleButton>
           ))}
         </ButtonGroup>
-        <p style={{ fontSize: '18px', marginBottom: '-10px' }}>Source</p>
-        <div>
+        <p style={{ fontSize: '18px', marginBottom: '-4px' }}>Source</p>
+        <div style={{ display: 'flex', gap: '8px' }}>
           <Button
             style={{
               borderRadius: '20px',
-              width: '70px',
-              marginRight: '10px',
+              width: '56px',
               backgroundColor: 'white',
               color: 'navy',
               fontWeight: 'bold',
@@ -1211,8 +1352,7 @@ function ManageElectrode({
           <Button
             style={{
               borderRadius: '20px',
-              width: '70px',
-              marginRight: '10px',
+              width: '56px',
               backgroundColor: 'white',
               color: 'navy',
               fontWeight: 'bold',
@@ -1233,8 +1373,7 @@ function ManageElectrode({
           <Button
             style={{
               borderRadius: '20px',
-              width: '70px',
-              marginRight: '10px',
+              width: '56px',
               backgroundColor: 'white',
               color: 'navy',
               fontWeight: 'bold',
@@ -1255,8 +1394,7 @@ function ManageElectrode({
           <Button
             style={{
               borderRadius: '20px',
-              width: '70px',
-              marginRight: '10px',
+              width: '56px',
               backgroundColor: 'white',
               color: 'navy',
               fontWeight: 'bold',
@@ -1278,6 +1416,7 @@ function ManageElectrode({
       </div>
       <div className="form-container">
         <Electrode
+          key={key}
           name={key}
           allQuantities={allQuantities}
           quantities={allQuantities[key]}
@@ -1319,8 +1458,8 @@ function ManageElectrode({
           contactNaming={namingConvention}
           adornment={allVolAmpToggles[key] === 'right' ? 'V' : 'mA'}
           historical={historical}
-          elspec={electrodeModels[selectedElectrodeLeft]}
-          electrodeLabel={convertElectrode(selectedElectrodeLeft)}
+          elspec={electrodeModels[activeElectrode]}
+          electrodeLabel={convertElectrode(activeElectrode)}
           templateSpace={allTemplateSpaces}
           setTemplateSpace={(updatedTemplateSpace) =>
             handleTemplateSpaceChange(updatedTemplateSpace)
@@ -1329,6 +1468,8 @@ function ManageElectrode({
           setShowViewer={(updatedShowViewer) =>
             handleShowViewer(updatedShowViewer)
           }
+          ossSettings={ossSettings}
+          setOSSSettings={updateOSSSettings}
         />
       </div>
       <div className="export-button-container">
@@ -1369,6 +1510,7 @@ function ManageElectrode({
           <Button
             // className="export-button-final"
             onClick={sendDataToMain}
+            disabled={isSaving}
             style={{
               // left: '-000px',
               // marginTop: -10,
@@ -1382,8 +1524,13 @@ function ManageElectrode({
               // fontWeight: 'bold',
             }}
           >
-            {mode === 'stimulate' ? 'Stimulate and Close' : 'Save'}
+            {saveButtonLabel}
           </Button>
+          {saveStatus && (
+            <span role="status" style={{ marginLeft: '12px' }}>
+              {saveStatus}
+            </span>
+          )}
         </div>
       )}
     </div>

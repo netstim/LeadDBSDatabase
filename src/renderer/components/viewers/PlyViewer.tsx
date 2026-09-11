@@ -58,6 +58,10 @@ import {
 import type { SteeringUnit } from '../../utils/currentSteering';
 import { niftiValuesToViewerProgram } from '../../utils/viewerProgram';
 import { createLeadAxisCameraPose } from '../../utils/leadAxisCamera';
+import {
+  extractFiberPolylines,
+  polylinesToSegmentPositions,
+} from '../../utils/matFibers';
 
 // Type definitions
 interface PlyViewerProps {
@@ -149,7 +153,16 @@ const VIEW_PRESETS = [
   },
 ];
 
+// Render-surface sizes: together the two views match the height of the
+// control panel to the left of the viewer.
+const PRIMARY_VIEW_WIDTH = 520;
+const PRIMARY_VIEW_HEIGHT = 700;
+const SECONDARY_VIEW_WIDTH = 520;
+const SECONDARY_VIEW_HEIGHT = 350;
+const SECONDARY_VIEW_ASPECT = SECONDARY_VIEW_WIDTH / SECONDARY_VIEW_HEIGHT;
+
 const NIFTI_FILE_PATTERN = /\.nii(\.gz)?$/i;
+const FIBER_FILE_PATTERN = /\.mat$/i;
 
 const stripNiftiExtension = (fileName: string): string =>
   fileName.replace(NIFTI_FILE_PATTERN, '');
@@ -659,7 +672,10 @@ function PlyViewer({
         scene.remove(child);
         disposeSceneObject(child);
       });
-    const mesh = new THREE.Mesh(geometry, material);
+    // Line materials (fiber tracts) render as segment lists, not meshes.
+    const mesh = (material as any)?.isLineBasicMaterial
+      ? new THREE.LineSegments(geometry, material)
+      : new THREE.Mesh(geometry, material);
     mesh.name = name; // Assign the name for reference
     if (position) {
       const [x, y, z] = position;
@@ -1794,7 +1810,7 @@ function PlyViewer({
       scene.background = new THREE.Color('black'); // White background
 
       // Create an OrthographicCamera
-      const aspect = 500 / 500;
+      const aspect = PRIMARY_VIEW_WIDTH / PRIMARY_VIEW_HEIGHT;
       const frustumSize = 45; // Adjust this value to control zoom
       const camera = new THREE.OrthographicCamera(
         (frustumSize * aspect) / -2, // left
@@ -1806,13 +1822,10 @@ function PlyViewer({
       );
 
       // Secondary Camera Setup
-      const secondaryWidth = 500;
-      const secondaryHeight = 250; // Adjust height as needed
-      const aspectSecondary = secondaryWidth / secondaryHeight;
       const secondaryFrustumHeight = frustumSize; // Set a smaller height for the secondary view
       const secondaryCamera = new THREE.OrthographicCamera(
-        (secondaryFrustumHeight * aspectSecondary) / -2,
-        (secondaryFrustumHeight * aspectSecondary) / 2,
+        (secondaryFrustumHeight * SECONDARY_VIEW_ASPECT) / -2,
+        (secondaryFrustumHeight * SECONDARY_VIEW_ASPECT) / 2,
         secondaryFrustumHeight / 2,
         secondaryFrustumHeight / -2,
         0.1,
@@ -1825,14 +1838,13 @@ function PlyViewer({
       const renderer = new THREE.WebGLRenderer({ antialias: true });
       // Enable proper transparency sorting
       renderer.sortObjects = true;
-      // renderer.setSize(300, 600); // Set smaller size
-      renderer.setSize(500, 500);
+      renderer.setSize(PRIMARY_VIEW_WIDTH, PRIMARY_VIEW_HEIGHT);
       mountRef.current.appendChild(renderer.domElement);
 
       const secondaryRenderer = new THREE.WebGLRenderer({ antialias: true });
       // Enable proper transparency sorting
       secondaryRenderer.sortObjects = true;
-      secondaryRenderer.setSize(500, 250);
+      secondaryRenderer.setSize(SECONDARY_VIEW_WIDTH, SECONDARY_VIEW_HEIGHT);
       secondaryMountRef.current.appendChild(secondaryRenderer.domElement);
 
       const ambientLight = new THREE.AmbientLight(0xffffff, 1.5); // Increased intensity for better back-face visibility
@@ -2558,7 +2570,7 @@ function PlyViewer({
           tail: selectedSide.tail,
           contacts: selectedSide.contacts,
           baseFrustumHeight: 45,
-          aspect: 2, // 500 x 250 render surface
+          aspect: SECONDARY_VIEW_ASPECT,
           minimumVisibleHeight: 8,
           padding: 1.5,
         })
@@ -4139,14 +4151,42 @@ function PlyViewer({
     addMeshToScene(overlayName, geometry, material);
   };
 
-  const onDrop = async (acceptedFiles) => {
-    const niftiFiles = acceptedFiles.filter((file) =>
-      NIFTI_FILE_PATTERN.test(file.name),
+  // Renders a Lead-DBS fiber tract .mat file as line segments.
+  const importFiberOverlay = (overlayName, buffer) => {
+    const polylines = extractFiberPolylines(buffer);
+    if (polylines.length === 0) {
+      throw new Error('No fiber tracts were found in the .mat file.');
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(polylinesToSegmentPositions(polylines), 3),
     );
-    if (niftiFiles.length === 0) {
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    const material = new THREE.LineBasicMaterial({
+      color:
+        OVERLAY_COLOR_PALETTE[
+          overlayColorIndexRef.current % OVERLAY_COLOR_PALETTE.length
+        ],
+      transparent: true,
+      opacity: 0.85,
+    });
+    overlayColorIndexRef.current += 1;
+    addMeshToScene(overlayName, geometry, material);
+  };
+
+  const onDrop = async (acceptedFiles) => {
+    const importableFiles = acceptedFiles.filter(
+      (file) =>
+        NIFTI_FILE_PATTERN.test(file.name) ||
+        FIBER_FILE_PATTERN.test(file.name),
+    );
+    if (importableFiles.length === 0) {
       setImportStatus({
         type: 'error',
-        message: 'Only NIfTI volumes (.nii or .nii.gz) can be imported here.',
+        message:
+          'Only NIfTI volumes (.nii, .nii.gz) or fiber tract .mat files can be imported here.',
       });
       return;
     }
@@ -4155,15 +4195,22 @@ function PlyViewer({
     const failed = [];
     // Sequential on purpose: marching cubes is CPU-heavy and parallel imports
     // would just fight over the main thread.
-    for (const file of niftiFiles) {
-      const overlayName = stripNiftiExtension(file.name);
+    for (const file of importableFiles) {
+      const overlayName = stripNiftiExtension(file.name).replace(
+        FIBER_FILE_PATTERN,
+        '',
+      );
       try {
         // eslint-disable-next-line no-await-in-loop
         const buffer = await file.arrayBuffer();
-        importNiftiOverlay(overlayName, buffer);
+        if (FIBER_FILE_PATTERN.test(file.name)) {
+          importFiberOverlay(overlayName, buffer);
+        } else {
+          importNiftiOverlay(overlayName, buffer);
+        }
         imported.push(overlayName);
       } catch (error) {
-        console.error(`Failed to import NIfTI overlay ${file.name}:`, error);
+        console.error(`Failed to import overlay ${file.name}:`, error);
         failed.push(overlayName);
       }
     }
@@ -4171,7 +4218,7 @@ function PlyViewer({
     if (failed.length > 0) {
       setImportStatus({
         type: 'error',
-        message: `Could not import: ${failed.join(', ')}. Check that the file is a valid NIfTI volume.`,
+        message: `Could not import: ${failed.join(', ')}. Check that the file is a valid NIfTI volume or fiber .mat file.`,
       });
     } else {
       setImportStatus({
@@ -4191,7 +4238,7 @@ function PlyViewer({
     noClick: true,
     noKeyboard: true,
     accept: {
-      'application/octet-stream': ['.nii'],
+      'application/octet-stream': ['.nii', '.mat'],
       'application/gzip': ['.gz'],
     },
   });
@@ -4560,7 +4607,8 @@ function PlyViewer({
             <div ref={secondaryMountRef} />
             {isDragActive && (
               <div style={dropOverlayStyle}>
-                Drop NIfTI volumes (.nii / .nii.gz) to add them to the scene
+                Drop NIfTI volumes (.nii / .nii.gz) or fiber tracts (.mat) to
+                add them to the scene
               </div>
             )}
             {importStatus && (
@@ -4729,10 +4777,11 @@ function PlyViewer({
                       style={{ width: '150px' }}
                     />
                     <h5 style={{ ...meshNameStyle, marginTop: '16px' }}>
-                      NIfTI overlays
+                      Overlays
                     </h5>
                     <div style={{ fontSize: '12px', color: '#333' }}>
-                      Drag and drop .nii / .nii.gz files onto the viewer, or
+                      Drag and drop .nii / .nii.gz volumes or fiber tract .mat
+                      files onto the viewer, or
                     </div>
                     <Button
                       variant="primary"
