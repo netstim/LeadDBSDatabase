@@ -1560,11 +1560,16 @@ button:active {
 }
 
 .triple-toggle-boston-test-left {
-
   position: absolute;
-  top: 90px;
-  left: -19px;
+  top: 92px;
+  /* The left-column graphic hugs its container's left edge. */
+  left: 43px;
+  transform: translateX(-50%);
   z-index: 6;
+  width: 84px;
+}
+.triple-toggle-boston-test-left > * {
+  width: 100% !important;
 }
 
 .image-name-boston-left {
@@ -1614,12 +1619,16 @@ button:active {
 }
 
 .triple-toggle-boston-test-right {
-
   position: absolute;
-  top: 90px;
-  left: 50px;
+  top: 92px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 25;
   pointer-events: auto;
+  width: 84px;
+}
+.triple-toggle-boston-test-right > * {
+  width: 100% !important;
 }
 
 .image-name-boston-right {
