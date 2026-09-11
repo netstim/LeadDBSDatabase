@@ -1,0 +1,12 @@
+{
+  "UPDRS-III": {
+    "timeline": "Baseline",
+    "Total": 42,
+    "Tremor": 8,
+    "Rigidity": 10
+  },
+  "Seizure Frequency": {
+    "timeline": "Baseline",
+    "PerMonth": 12
+  }
+}

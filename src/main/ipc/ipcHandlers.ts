@@ -1,12 +1,191 @@
 import { app, ipcMain, dialog } from 'electron';
 import path from 'path';
 import zlib from 'zlib';
-import { getData, setData } from '../data/data';
+import { getData } from '../data/data';
 import { getPatientFolder, getPatientFolderPly } from '../helpers/helpers';
+import {
+  discoverLeadGroupExportOptions,
+  prepareLeadGroupExport,
+  validateLeadGroupExportOptionsRequest,
+  validateLeadGroupExportRequest,
+  writeNewLeadGroupAnalysis,
+} from '../utils/leadGroupExport';
+import { buildLeadGroupMatFile } from '../utils/leadGroupMat';
 
 const { execSync } = require('child_process');
 
 const fs = require('fs');
+
+let fileHandlersRegistered = false;
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const assertSafePathSegment = (value: unknown, label: string): string => {
+  if (
+    typeof value !== 'string' ||
+    !value.trim() ||
+    value === '.' ||
+    value === '..' ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('\0')
+  ) {
+    throw new Error(`Invalid ${label}.`);
+  }
+
+  return value;
+};
+
+const exactArrayBuffer = (value: Buffer): ArrayBuffer =>
+  value.buffer.slice(
+    value.byteOffset,
+    value.byteOffset + value.byteLength,
+  ) as ArrayBuffer;
+
+const isContainedPath = (root: string, candidate: string): boolean => {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) &&
+      relative !== '..' &&
+      !path.isAbsolute(relative))
+  );
+};
+
+interface ViewerRequest {
+  patient?: { id?: unknown };
+  directoryPath?: unknown;
+  leadDBS?: unknown;
+}
+
+const resolveViewerPatientFolder = async (
+  historical: unknown,
+): Promise<{ patientId: string; patientFolder: string } | null> => {
+  if (
+    typeof historical !== 'object' ||
+    historical === null ||
+    (historical as ViewerRequest).leadDBS !== true
+  ) {
+    return null;
+  }
+
+  const request = historical as ViewerRequest;
+  const patientId = assertSafePathSegment(
+    request.patient?.id,
+    'viewer patient ID',
+  );
+  if (
+    typeof request.directoryPath !== 'string' ||
+    !path.isAbsolute(request.directoryPath)
+  ) {
+    throw new Error('Invalid viewer dataset directory.');
+  }
+
+  let datasetRoot: string;
+  try {
+    datasetRoot = await fs.promises.realpath(request.directoryPath);
+  } catch {
+    return null;
+  }
+
+  const requestedPatientFolder = getPatientFolderPly(
+    datasetRoot,
+    patientId,
+    true,
+  );
+  if (!requestedPatientFolder || !path.isAbsolute(requestedPatientFolder)) {
+    return null;
+  }
+
+  let patientFolder: string;
+  try {
+    patientFolder = await fs.promises.realpath(requestedPatientFolder);
+  } catch {
+    return null;
+  }
+  if (!isContainedPath(datasetRoot, patientFolder)) {
+    throw new Error(
+      'The viewer patient folder is outside the selected dataset.',
+    );
+  }
+
+  return { patientId, patientFolder };
+};
+
+const resolveContainedViewerFile = async (
+  root: string,
+  requestedPath: string,
+  label: string,
+): Promise<string | null> => {
+  let resolvedPath: string;
+  try {
+    resolvedPath = await fs.promises.realpath(requestedPath);
+  } catch (error: any) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+    throw new Error(`${label} could not be resolved.`);
+  }
+  if (!isContainedPath(root, resolvedPath)) {
+    throw new Error(`${label} is outside the patient folder.`);
+  }
+  const stats = await fs.promises.stat(resolvedPath);
+  if (!stats.isFile()) return null;
+  return resolvedPath;
+};
+
+const atomicWriteJson = async (
+  filePath: string,
+  data: unknown,
+): Promise<void> => {
+  const directory = path.dirname(filePath);
+  await fs.promises.mkdir(directory, { recursive: true });
+
+  const temporaryPath = path.join(
+    directory,
+    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+
+  try {
+    await fs.promises.writeFile(
+      temporaryPath,
+      JSON.stringify(data, null, 2),
+      'utf8',
+    );
+    await fs.promises.rename(temporaryPath, filePath);
+  } catch (error) {
+    try {
+      await fs.promises.unlink(temporaryPath);
+    } catch {
+      // The temporary file may not have been created.
+    }
+    throw error;
+  }
+};
+
+const launchPatientIds = (stimulationData: any): string[] => {
+  if (
+    stimulationData?.scope === 'patient' &&
+    typeof stimulationData?.selectedPatientId === 'string' &&
+    stimulationData.selectedPatientId
+  ) {
+    return [stimulationData.selectedPatientId];
+  }
+  if (Array.isArray(stimulationData?.subjects)) {
+    const subjectIds = stimulationData.subjects
+      .map((subject: any) => subject?.id || subject?.patientname)
+      .filter((id: unknown): id is string => typeof id === 'string' && !!id);
+    if (subjectIds.length > 0) return subjectIds;
+  }
+
+  const patientNames = stimulationData?.patientname;
+  if (Array.isArray(patientNames)) {
+    return patientNames.filter(
+      (id: unknown): id is string => typeof id === 'string' && !!id,
+    );
+  }
+
+  return typeof patientNames === 'string' && patientNames ? [patientNames] : [];
+};
 
 interface DirectoryEntry {
   name: string;
@@ -14,8 +193,46 @@ interface DirectoryEntry {
 }
 
 export default function registerFileHandlers() {
+  if (fileHandlersRegistered) {
+    return;
+  }
+  fileHandlersRegistered = true;
+
   ipcMain.on('ipc-example', async (_event, arg) => {
     console.log('ipc-example');
+  });
+
+  ipcMain.handle(
+    'get-lead-group-export-options',
+    async (_event, request: unknown) => {
+      const validated = validateLeadGroupExportOptionsRequest(request);
+      return discoverLeadGroupExportOptions(
+        validated.directoryPath,
+        validated.leadDBS,
+        validated.patientIds,
+        getData('stimulationData') || {},
+      );
+    },
+  );
+
+  ipcMain.handle('export-lead-group', async (_event, request: unknown) => {
+    const validated = validateLeadGroupExportRequest(request);
+    const prepared = await prepareLeadGroupExport(
+      validated,
+      getData('stimulationData') || {},
+    );
+    const createdAt = new Date();
+    const fileBuffer = buildLeadGroupMatFile(prepared, createdAt);
+    await writeNewLeadGroupAnalysis(prepared, fileBuffer);
+
+    return {
+      success: true,
+      filePath: prepared.filePath,
+      patientCount: prepared.patients.length,
+      outcomeCount: prepared.outcomes.length,
+      byteLength: fileBuffer.byteLength,
+      createdAt: createdAt.toISOString(),
+    };
   });
 
   // Handle writing the JSON file
@@ -28,8 +245,8 @@ export default function registerFileHandlers() {
       console.log('Stimulation Data: ', stimulationData);
       filePath = path.join(stimulationData.path, 'participants.json');
     }
-      console.log('File path: ', filePath);
-      fs.writeFile(filePath, JSON.stringify(patients, null, 2), (err) => {
+    console.log('File path: ', filePath);
+    fs.writeFile(filePath, JSON.stringify(patients, null, 2), (err) => {
       if (err) {
         console.error('Error saving JSON file:', err);
         event.sender.send('json-save-error', 'Error saving file');
@@ -52,107 +269,159 @@ export default function registerFileHandlers() {
     });
   });
 
-  ipcMain.on('revert-to-standard', async (event, arg) => {
-    const stimulationData = getData('stimulationData');
-    stimulationData.type = 'leaddbs';
-    if (stimulationData.mode !== 'standalone') {
-      stimulationData.mode = 'explore';
-    }
-    setData('stimulationData', stimulationData);
-  });
-
   ipcMain.on('open-file', (event, arg) => {
     const f = fs.readFileSync(arg);
     console.log(event);
     event.reply('open-file', `pong: ${f}`);
   });
 
-  ipcMain.on('save-file', (event, file, data, historical) => {
-    const { patient, timeline, directoryPath, leadDBS } = historical;
-
-    if (!patient || !timeline || !directoryPath) {
-      console.error('Missing patient, timeline, or directoryPath');
-      return;
+  const saveStimulationFile = async (data: any, historical: any) => {
+    const { patient, timeline, directoryPath, leadDBS } = historical || {};
+    if (!patient?.id || !timeline || !directoryPath) {
+      throw new Error('Missing patient, timeline, or directory path.');
     }
-    // const masterjsonpath = path.join(directoryPath, 'dataset_master.json');
-    // Construct the proper folder structure based on the patient ID and timeline
-    let patientDir = path.join(directoryPath, `sub-${patient.id}`);
-    let sessionDir = path.join(patientDir, `ses-${timeline}`);
 
-    if (leadDBS) {
-      const newDirectoryPath = path.join(
-        directoryPath,
-        'derivatives/leaddbs',
-        patient.id,
-        'clinical',
+    const patientId = assertSafePathSegment(patient.id, 'patient ID');
+    const safeTimeline = assertSafePathSegment(timeline, 'session name');
+    const patientDir = leadDBS
+      ? getPatientFolder(directoryPath, patientId, true)
+      : path.join(directoryPath, `sub-${patientId}`);
+    const sessionDir = path.join(patientDir, `ses-${safeTimeline}`);
+    const fileName = leadDBS
+      ? `${patientId}_ses-${safeTimeline}_stimparameters.json`
+      : `sub-${patientId}_ses-${safeTimeline}_stim.json`;
+    const filePath = path.join(sessionDir, fileName);
+
+    await atomicWriteJson(filePath, data);
+
+    const masterJsonPath = path.join(directoryPath, 'dataset_master.json');
+    if (fs.existsSync(masterJsonPath)) {
+      const masterData = JSON.parse(
+        await fs.promises.readFile(masterJsonPath, 'utf8'),
       );
-      patientDir = path.join(newDirectoryPath);
-      sessionDir = path.join(patientDir, `ses-${timeline}`);
+      const masterPatientId = patientId.replace('-', '_');
+      const clinicalData = masterData?.[masterPatientId]?.clinicalData;
+      if (clinicalData) {
+        const sessionKey = `ses_${safeTimeline}`;
+        if (!Array.isArray(clinicalData[sessionKey])) {
+          clinicalData[sessionKey] = [];
+        }
+        if (!clinicalData[sessionKey].includes(filePath)) {
+          clinicalData[sessionKey].push(filePath);
+        }
+        await atomicWriteJson(masterJsonPath, masterData);
+      }
     }
 
+    return { success: true, filePath };
+  };
+
+  ipcMain.handle('save-file', async (_event, _file, data, historical) =>
+    saveStimulationFile(data, historical),
+  );
+
+  // Keep the original event channel for older renderer builds.
+  ipcMain.on('save-file', async (event, _file, data, historical) => {
     try {
-      // Ensure that the directories exist, if not, create them
-      if (!fs.existsSync(patientDir))
-        fs.mkdirSync(patientDir, { recursive: true });
-      if (!fs.existsSync(sessionDir))
-        fs.mkdirSync(sessionDir, { recursive: true });
-
-      // Convert the data to a string format (JSON)
-      const dataString = JSON.stringify(data, null, 2);
-
-      // Dynamically name the file based on patient and timeline
-      let fileName = `sub-${patient.id}_ses-${timeline}_stim.json`;
-      let filePath = path.join(sessionDir, fileName);
-
-      if (leadDBS) {
-        fileName = `${patient.id}_ses-${timeline}_stimparameters.json`;
-        filePath = path.join(sessionDir, fileName);
-      }
-
-      // Write the data to the file
-      fs.writeFileSync(filePath, dataString);
-
-      // Write the filenpath to the master json script
-      const masterjsonpath = path.join(directoryPath, 'dataset_master.json');
-      const jsonData = fs.readFileSync(masterjsonpath, 'utf-8');
-      const patientId = patient.id.replace('-', '_');
-      const masterjsondata = JSON.parse(jsonData);
-      // Ensure the timeline session exists
-      if (!masterjsondata[patientId].clinicalData[`ses_${timeline}`]) {
-        masterjsondata[patientId].clinicalData[`ses_${timeline}`] = [];
-      }
-
-      // Now it's safe to push filePath
-      masterjsondata[patientId].clinicalData[`ses_${timeline}`].push(filePath);
-      fs.writeFileSync(masterjsonpath, JSON.stringify(masterjsondata));
-      // Send the file path back to the renderer process
-      event.reply('file-saved', filePath);
-
-      console.log(`Data saved successfully to ${filePath}`);
+      const result = await saveStimulationFile(data, historical);
+      event.reply('file-saved', result.filePath);
     } catch (error) {
-      // Handle any errors in the saving process
-      console.error('Error writing to file:', error);
-      event.reply('file-save-error', error.message);
+      event.reply('file-save-error', errorMessage(error));
     }
   });
 
-  ipcMain.on('save-file-stimulate', (event, file, data) => {
-    console.log('FILE: ', file);
-    const dataString = JSON.stringify(data);
-    // const newStimFilePath = path.join(stimulationDirectory, 'data.json');
+  const saveStimulateResult = async (data: any) => {
     const stimulationData = getData('stimulationData');
-    const newStimFilePath = path.join(stimulationData.stimDir, 'data.json');
-    console.log(newStimFilePath);
-    console.log(dataString);
-    try {
-      // fs.writeFileSync(filePath, dataString);
-      console.log(newStimFilePath);
-      fs.writeFileSync(newStimFilePath, dataString);
-    } catch (error) {
-      // Handle the error here
-      console.error('Error writing to file:', error);
+    const responsePath =
+      stimulationData?.responsePath ||
+      stimulationData?.outputPath ||
+      (stimulationData?.stimDir
+        ? path.join(stimulationData.stimDir, 'data.json')
+        : null);
+
+    if (!responsePath || typeof responsePath !== 'string') {
+      throw new Error('The launch request does not specify a result path.');
     }
-    event.reply('file-saved', newStimFilePath);
+
+    const expectedPatientIds = launchPatientIds(stimulationData);
+    let normalizedData = data;
+
+    if (
+      stimulationData?.type === 'leadgroup' ||
+      stimulationData?.scope === 'group'
+    ) {
+      if (expectedPatientIds.length === 0) {
+        throw new Error(
+          'The group launch request does not contain any patients.',
+        );
+      }
+      if (!Array.isArray(normalizedData)) {
+        const keyedResults = normalizedData?.resultsByPatient || normalizedData;
+        if (
+          keyedResults &&
+          typeof keyedResults === 'object' &&
+          expectedPatientIds.every((id) => keyedResults[id])
+        ) {
+          normalizedData = expectedPatientIds.map((id) => keyedResults[id]);
+        }
+      }
+
+      if (!Array.isArray(normalizedData)) {
+        throw new Error(
+          'Group stimulation results must contain one result per patient.',
+        );
+      }
+      if (normalizedData.length !== expectedPatientIds.length) {
+        throw new Error(
+          `Expected ${expectedPatientIds.length} group results, received ${normalizedData.length}.`,
+        );
+      }
+
+      const resultIds = normalizedData.map(
+        (result: any) => result?.subjectId || result?.patientname,
+      );
+      if (resultIds.every((id: unknown) => typeof id === 'string' && !!id)) {
+        const resultsByPatient = new Map(
+          normalizedData.map((result: any, index: number) => [
+            resultIds[index],
+            result,
+          ]),
+        );
+        if (
+          resultsByPatient.size !== normalizedData.length ||
+          !expectedPatientIds.every((id) => resultsByPatient.has(id))
+        ) {
+          throw new Error(
+            'Group result patient IDs do not match the launch request.',
+          );
+        }
+        normalizedData = expectedPatientIds.map((id) =>
+          resultsByPatient.get(id),
+        );
+      }
+    }
+
+    await atomicWriteJson(responsePath, normalizedData);
+    return {
+      success: true,
+      filePath: responsePath,
+      patientIds: expectedPatientIds,
+      resultCount: Array.isArray(normalizedData) ? normalizedData.length : 1,
+    };
+  };
+
+  ipcMain.handle('save-file-stimulate', async (_event, _file, data) =>
+    saveStimulateResult(data),
+  );
+
+  // Keep the original event channel for older renderer builds.
+  ipcMain.on('save-file-stimulate', async (event, _file, data) => {
+    try {
+      const result = await saveStimulateResult(data);
+      event.reply('file-saved', result.filePath);
+    } catch (error) {
+      event.reply('file-save-error', errorMessage(error));
+    }
   });
 
   ipcMain.on('save-file-test', (event, data) => {
@@ -171,61 +440,141 @@ export default function registerFileHandlers() {
     event.reply('file-saved', newStimFilePath);
   });
 
-  ipcMain.on('save-file-clinical', (event, data, historical, scoretype) => {
-    const { patient, timeline, directoryPath, leadDBS } = historical;
-
-    if (!patient || !timeline || !directoryPath) {
-      console.error('Missing patient, timeline, or directoryPath');
-      return;
-    }
-    // Construct the proper folder structure based on the patient ID and timeline
-    let patientDir = path.join(directoryPath, `sub-${patient.id}`);
-    if (leadDBS) {
-      patientDir = path.join(
-        directoryPath,
-        'derivatives',
-        'leaddbs',
-        `${patient.id}`,
-        'clinical',
+  const saveClinicalScores = async (
+    data: any,
+    historical: any,
+    scoretype: string,
+  ) => {
+    const { patient, timeline, directoryPath, leadDBS } = historical || {};
+    if (!patient?.id || !timeline || !directoryPath || !scoretype) {
+      throw new Error(
+        'Missing patient, timeline, directory path, or clinical score type.',
       );
     }
-    const sessionDir = path.join(patientDir, `ses-${timeline}`);
 
-    try {
-      // Ensure that the directories exist, if not, create them
-      if (!fs.existsSync(patientDir))
-        fs.mkdirSync(patientDir, { recursive: true });
-      if (!fs.existsSync(sessionDir))
-        fs.mkdirSync(sessionDir, { recursive: true });
+    const patientId = assertSafePathSegment(patient.id, 'patient ID');
+    const safeTimeline = assertSafePathSegment(timeline, 'session name');
+    const patientDir = leadDBS
+      ? getPatientFolder(directoryPath, patientId, true)
+      : path.join(directoryPath, `sub-${patientId}`);
+    const sessionDir = path.join(patientDir, `ses-${safeTimeline}`);
+    const fileName = leadDBS
+      ? `${patientId}_ses-${safeTimeline}_clinical.json`
+      : `sub-${patientId}_ses-${safeTimeline}_clinical.json`;
+    const filePath = path.join(sessionDir, fileName);
 
-      // Convert the data to a string format (JSON)
-      const dataString = JSON.stringify(data, null, 2);
-
-      // Dynamically name the file based on patient and timeline
-      let fileName = `sub-${patient.id}_ses-${timeline}_clinical.json`;
-      if (leadDBS) {
-        fileName = `${patient.id}_ses-${timeline}_clinical.json`;
-      }
-      const filePath = path.join(sessionDir, fileName);
-      if (fs.existsSync(filePath)) {
-        const clinicalScores = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        clinicalScores[scoretype] = data;
-        fs.writeFileSync(filePath, JSON.stringify(clinicalScores, null, 2));
-      } else {
-        let clinicalScores = {};
-        clinicalScores[scoretype] = data;
-        fs.writeFileSync(filePath, JSON.stringify(clinicalScores, null, 2));
-      }
-      // Send the file path back to the renderer process
-      event.reply('file-saved', filePath);
-
-      console.log(`Data saved successfully to ${filePath}`);
-    } catch (error) {
-      // Handle any errors in the saving process
-      console.error('Error writing to file:', error);
-      event.reply('file-save-error', error.message);
+    let clinicalScores: Record<string, any> = {};
+    if (fs.existsSync(filePath)) {
+      clinicalScores = JSON.parse(await fs.promises.readFile(filePath, 'utf8'));
     }
-  });
+    clinicalScores[scoretype] = data;
+    await atomicWriteJson(filePath, clinicalScores);
+
+    return { success: true, filePath };
+  };
+
+  ipcMain.handle(
+    'save-file-clinical',
+    async (_event, data, historical, scoretype) =>
+      saveClinicalScores(data, historical, scoretype),
+  );
+
+  // Keep the original event channel for older renderer builds.
+  ipcMain.on(
+    'save-file-clinical',
+    async (event, data, historical, scoretype) => {
+      try {
+        const result = await saveClinicalScores(data, historical, scoretype);
+        event.reply('file-saved', result.filePath);
+      } catch (error) {
+        event.reply('file-save-error', errorMessage(error));
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'delete-session',
+    async (_event, directoryPath, patientId, timeline, leadDBS) => {
+      if (!directoryPath) {
+        throw new Error('Missing dataset directory.');
+      }
+
+      const safePatientId = assertSafePathSegment(patientId, 'patient ID');
+      const safeTimeline = assertSafePathSegment(timeline, 'session name');
+      const patientDir = leadDBS
+        ? getPatientFolder(directoryPath, safePatientId, true)
+        : path.join(directoryPath, `sub-${safePatientId}`);
+      const sessionDir = path.resolve(patientDir, `ses-${safeTimeline}`);
+      const resolvedPatientDir = path.resolve(patientDir);
+
+      if (path.dirname(sessionDir) !== resolvedPatientDir) {
+        throw new Error(
+          'The requested session is outside the patient directory.',
+        );
+      }
+
+      const allowedFileNames = new Set([
+        `${safePatientId}_ses-${safeTimeline}_clinical.json`,
+        `${safePatientId}_ses-${safeTimeline}_stimparameters.json`,
+        `sub-${safePatientId}_ses-${safeTimeline}_clinical.json`,
+        `sub-${safePatientId}_ses-${safeTimeline}_stim.json`,
+      ]);
+      const removedFiles: string[] = [];
+
+      if (fs.existsSync(sessionDir)) {
+        const entries = await fs.promises.readdir(sessionDir, {
+          withFileTypes: true,
+        });
+        for (const entry of entries) {
+          if (entry.isFile() && allowedFileNames.has(entry.name)) {
+            await fs.promises.unlink(path.join(sessionDir, entry.name));
+            removedFiles.push(entry.name);
+          }
+        }
+
+        const remainingEntries = await fs.promises.readdir(sessionDir);
+        if (remainingEntries.length === 0) {
+          await fs.promises.rmdir(sessionDir);
+        }
+      }
+      const sessionRemoved = !fs.existsSync(sessionDir);
+
+      const masterJsonPath = path.join(directoryPath, 'dataset_master.json');
+      if (fs.existsSync(masterJsonPath)) {
+        const masterData = JSON.parse(
+          await fs.promises.readFile(masterJsonPath, 'utf8'),
+        );
+        const masterPatientId = safePatientId.replace('-', '_');
+        const clinicalData = masterData?.[masterPatientId]?.clinicalData;
+        const sessionKey = `ses_${safeTimeline}`;
+        if (clinicalData && Array.isArray(clinicalData[sessionKey])) {
+          const previousPaths = clinicalData[sessionKey];
+          const remainingPaths = previousPaths.filter((storedPath: unknown) => {
+            if (typeof storedPath !== 'string') return true;
+            const resolvedStoredPath = path.resolve(directoryPath, storedPath);
+            return !(
+              path.dirname(resolvedStoredPath) === sessionDir &&
+              allowedFileNames.has(path.basename(resolvedStoredPath))
+            );
+          });
+          if (remainingPaths.length !== previousPaths.length) {
+            if (remainingPaths.length === 0) {
+              delete clinicalData[sessionKey];
+            } else {
+              clinicalData[sessionKey] = remainingPaths;
+            }
+            await atomicWriteJson(masterJsonPath, masterData);
+          }
+        }
+      }
+
+      return {
+        success: true,
+        removedFiles,
+        sessionRemoved,
+      };
+    },
+  );
 
   ipcMain.on(
     'import-file-clinical',
@@ -297,6 +646,12 @@ export default function registerFileHandlers() {
       // const path = require('path');
       console.log('Timeline: ', timeline);
       const outputData = {};
+      // Guard against callers mounted without navigation state: an exception
+      // here would surface as an uncaught main-process error dialog.
+      if (!id || !timeline || typeof timeline !== 'object' || !directoryPath) {
+        event.reply('import-file-clinical-group', outputData);
+        return;
+      }
       Object.keys(timeline).forEach((key) => {
         try {
           // Loop through each timeline item and process it individually
@@ -345,58 +700,101 @@ export default function registerFileHandlers() {
 
   // PLY Viewer ipc functions
 
-  ipcMain.handle('load-ply-file', async (event, historical) => {
-    const { patient, timeline, directoryPath, leadDBS } = historical;
-    if (leadDBS) {
-      const patientPath = getPatientFolderPly(
-        directoryPath,
-        patient.id,
-        leadDBS,
-      );
-      const filePath = path.join(
-        patientPath,
-        'export/ply/combined_electrodes.ply',
-      );
-      const fileData = fs.readFileSync(filePath); // Read the PLY file as binary
-      return fileData.buffer; // Return as ArrayBuffer // send the file contents back to renderer process
+  ipcMain.handle('load-ply-file', async (_event, historical) => {
+    const resolved = await resolveViewerPatientFolder(historical);
+    if (!resolved) return null;
+    const filePath = path.join(
+      resolved.patientFolder,
+      'export',
+      'ply',
+      'combined_electrodes.ply',
+    );
+    const resolvedFile = await resolveContainedViewerFile(
+      resolved.patientFolder,
+      filePath,
+      'The patient electrode PLY file',
+    );
+    if (!resolvedFile) return null;
+    try {
+      return exactArrayBuffer(await fs.promises.readFile(resolvedFile));
+    } catch (error: any) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+      throw new Error('The patient electrode PLY file could not be read.');
     }
-    return 'No ply file found'; // Return as ArrayBuffer // send the file contents back to renderer process
   });
 
-  ipcMain.handle('load-ply-file-anatomy', async (event, historical) => {
-    const { patient, timeline, directoryPath, leadDBS } = historical;
-    if (leadDBS) {
-      const patientPath = getPatientFolderPly(
-        directoryPath,
-        patient.id,
-        leadDBS,
-      );
-      const filePath = path.join(patientPath, 'export/ply/anatomy.ply');
-      const fileData = fs.readFileSync(filePath); // Read the PLY file as binary
-      return fileData.buffer; // Return as ArrayBuffer // send the file contents back to renderer process
+  ipcMain.handle('load-ply-file-anatomy', async (_event, historical) => {
+    const resolved = await resolveViewerPatientFolder(historical);
+    if (!resolved) return null;
+    const filePath = path.join(
+      resolved.patientFolder,
+      'export',
+      'ply',
+      'anatomy.ply',
+    );
+    const resolvedFile = await resolveContainedViewerFile(
+      resolved.patientFolder,
+      filePath,
+      'The patient anatomy PLY file',
+    );
+    if (!resolvedFile) return null;
+    try {
+      return exactArrayBuffer(await fs.promises.readFile(resolvedFile));
+    } catch (error: any) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+      throw new Error('The patient anatomy PLY file could not be read.');
     }
-    return 'No ply file found'; // Return as ArrayBuffer // send the file contents back to renderer process
   });
 
-  ipcMain.handle('load-vis-coords', async (event, historical) => {
-    const { patient, timeline, directoryPath, leadDBS } = historical;
-    console.log(patient);
-    if (leadDBS) {
-      const patientPath = getPatientFolderPly(
-        directoryPath,
-        patient.id,
-        leadDBS,
+  ipcMain.handle('load-vis-coords', async (_event, historical) => {
+    const resolved = await resolveViewerPatientFolder(historical);
+    if (!resolved) return null;
+    const requestedClinicalDirectory = path.join(
+      resolved.patientFolder,
+      'clinical',
+    );
+    let clinicalDirectory: string;
+    let entries: string[];
+    try {
+      clinicalDirectory = await fs.promises.realpath(
+        requestedClinicalDirectory,
       );
-      const filePath = path.join(
-        patientPath,
-        'clinical',
-        `${patient.id}_desc-reconstruction.json`,
-      );
-      const fileData = fs.readFileSync(filePath, 'utf8'); // Read the PLY file as binary
-      const jsonData = JSON.parse(fileData); // Parse the string into a JSON object
-      return jsonData; // Return as ArrayBuffer // send the file contents back to renderer process
+      if (!isContainedPath(resolved.patientFolder, clinicalDirectory)) {
+        throw new Error(
+          'The patient clinical directory is outside the patient folder.',
+        );
+      }
+      entries = await fs.promises.readdir(clinicalDirectory);
+    } catch (error: any) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+      throw new Error('The patient clinical directory could not be read.');
     }
-    return 'No coords found'; // Return as ArrayBuffer // send the file contents back to renderer process
+
+    const expectedName =
+      `${resolved.patientId}_desc-reconstruction.json`.toLowerCase();
+    const matches = entries.filter(
+      (entry) => entry.toLowerCase() === expectedName,
+    );
+    if (matches.length === 0) return null;
+    if (matches.length > 1) {
+      throw new Error(
+        'Multiple case-variant reconstruction JSON files were found for this patient.',
+      );
+    }
+
+    const reconstructionPath = await resolveContainedViewerFile(
+      clinicalDirectory,
+      path.join(clinicalDirectory, matches[0]),
+      'The patient reconstruction JSON',
+    );
+    if (!reconstructionPath) return null;
+    try {
+      return JSON.parse(await fs.promises.readFile(reconstructionPath, 'utf8'));
+    } catch (error) {
+      throw new Error(
+        'The patient reconstruction JSON is invalid or unreadable.',
+      );
+    }
   });
 
   // ipcMain.handle('load-ply-file-2', async (event, filePath) => {
@@ -522,49 +920,71 @@ export default function registerFileHandlers() {
     event.reply('batch-import', 'success');
   });
 
-  ipcMain.on('batch-import-stimulation', async (event, data, leadDBS) => {
+  const batchImportStimulation = async (data: any, leadDBS: boolean) => {
     const stimulationData = getData('stimulationData');
-    const directoryPath = stimulationData.filepath;
-    console.log(Object.keys(data));
-    console.log(data);
-    Object.keys(data).forEach((key) => {
-      const { id, S, timeline } = data[key];
-      console.log(directoryPath, id);
-      const patientFolder = getPatientFolder(directoryPath, id, leadDBS);
-      console.log('Patient Folder: ', patientFolder);
-      console.log('Scores: ', S);
-      const sessionDir = path.join(patientFolder, `ses-${timeline}`);
+    const directoryPath = stimulationData?.filepath || stimulationData?.path;
+    if (!directoryPath) {
+      throw new Error('No dataset directory is available for the import.');
+    }
+    if (!data || typeof data !== 'object') {
+      throw new Error('The stimulation import does not contain any rows.');
+    }
+
+    const errors: Array<{ row: string; error: string }> = [];
+    let savedCount = 0;
+
+    for (const key of Object.keys(data)) {
       try {
-        // Ensure that the directories exist, if not, create them
-        if (!fs.existsSync(patientFolder))
-          fs.mkdirSync(patientFolder, { recursive: true });
-        if (!fs.existsSync(sessionDir))
-          fs.mkdirSync(sessionDir, { recursive: true });
-
-        // Wrap the S object in an outer shell
-        const dataToSave = { S };
-
-        // Convert the data to a string format (JSON)
-        const dataString = JSON.stringify(dataToSave, null, 2);
-
-        // Dynamically name the file based on patient and timeline
-        let fileName = `sub-${id}_ses-${timeline}_stim.json`;
-        if (leadDBS) {
-          fileName = `${id}_ses-${timeline}_stimparameters.json`;
+        const { id, S, timeline } = data[key] || {};
+        const safePatientId = assertSafePathSegment(id, 'patient ID');
+        const safeTimeline = assertSafePathSegment(timeline, 'session name');
+        if (!S || typeof S !== 'object') {
+          throw new Error('Missing stimulation settings.');
         }
+
+        const patientFolder = leadDBS
+          ? getPatientFolder(directoryPath, safePatientId, true)
+          : path.join(directoryPath, `sub-${safePatientId}`);
+        const sessionDir = path.join(patientFolder, `ses-${safeTimeline}`);
+        const fileName = leadDBS
+          ? `${safePatientId}_ses-${safeTimeline}_stimparameters.json`
+          : `sub-${safePatientId}_ses-${safeTimeline}_stim.json`;
         const filePath = path.join(sessionDir, fileName);
-
-        // Write the data to the file
-        fs.writeFileSync(filePath, dataString);
-
-        // Send the file path back to the renderer process
-        console.log(`Data saved successfully to ${filePath}`);
+        await atomicWriteJson(filePath, { S });
+        savedCount += 1;
       } catch (error) {
-        // Handle any errors in the saving process
-        console.error('Error writing to file:', error);
+        errors.push({
+          row: Array.isArray(data) ? String(Number(key) + 2) : key,
+          error: errorMessage(error),
+        });
       }
-    });
-    event.reply('batch-import-stimulation', 'success');
+    }
+
+    return {
+      success: errors.length === 0,
+      savedCount,
+      errors,
+      error: errors.map(({ row, error }) => `Row ${row}: ${error}`).join('\n'),
+    };
+  };
+
+  ipcMain.handle('batch-import-stimulation', async (_event, data, leadDBS) =>
+    batchImportStimulation(data, !!leadDBS),
+  );
+
+  // Keep the original event channel for older renderer builds.
+  ipcMain.on('batch-import-stimulation', async (event, data, leadDBS) => {
+    try {
+      const result = await batchImportStimulation(data, !!leadDBS);
+      event.reply('batch-import-stimulation', result);
+    } catch (error) {
+      event.reply('batch-import-stimulation', {
+        success: false,
+        savedCount: 0,
+        errors: [{ row: '', error: errorMessage(error) }],
+        error: errorMessage(error),
+      });
+    }
   });
 
   ipcMain.handle('get-clinical-scores-types', async (event, text) => {
@@ -582,23 +1002,46 @@ export default function registerFileHandlers() {
     }
   });
 
-  ipcMain.on('add-score-type', async (event, name, newScore) => {
-    console.log('newScore: ', newScore);
+  const addScoreType = async (name: string, newScore: any) => {
+    const scoreName = typeof name === 'string' ? name.trim() : '';
+    if (!scoreName) {
+      throw new Error('Clinical score type name is required.');
+    }
+
     const userDataPath = app.getPath('userData');
     const scoresFilePath = path.join(userDataPath, 'ClinicalScores.json');
-    const data = fs.readFileSync(scoresFilePath, 'utf8');
-    const scores = JSON.parse(data);
-    console.log('scores: ', scores);
-    console.log('name: ', name);
-    console.log('newScore: ', newScore);
-    scores[name] = newScore[name];
-    console.log('scores: ', scores);
-    // scores[newScore.name] = newScore.values;
-    fs.writeFileSync(scoresFilePath, JSON.stringify(scores, null, 2));
+    const scores = fs.existsSync(scoresFilePath)
+      ? JSON.parse(await fs.promises.readFile(scoresFilePath, 'utf8'))
+      : {};
+    const scoreDefinition =
+      newScore?.[name] ?? newScore?.[scoreName] ?? newScore;
+    if (!scoreDefinition || typeof scoreDefinition !== 'object') {
+      throw new Error('Clinical score fields are required.');
+    }
+
+    const replaced = Object.prototype.hasOwnProperty.call(scores, scoreName);
+    scores[scoreName] = scoreDefinition;
+    await atomicWriteJson(scoresFilePath, scores);
+    return { success: true, name: scoreName, score: scoreDefinition, replaced };
+  };
+
+  ipcMain.handle('add-score-type', async (_event, name, newScore) =>
+    addScoreType(name, newScore),
+  );
+
+  // Keep the original event channel for older renderer builds.
+  ipcMain.on('add-score-type', async (event, name, newScore) => {
+    try {
+      const result = await addScoreType(name, newScore);
+      event.reply('score-type-added', result);
+    } catch (error) {
+      event.reply('score-type-add-error', errorMessage(error));
+    }
   });
 
   ipcMain.handle('get-unit-solutions', async (event, filePath) => {
-    const patientFolder = '/Users/savirmadan/Documents/Localizations/Patient0401Output/derivatives/leaddbs/sub-CbctDbs0401/stimulations/MNI152NLin2009bAsym/initialize';
+    const patientFolder =
+      '/Users/savirmadan/Documents/Localizations/Patient0401Output/derivatives/leaddbs/sub-CbctDbs0401/stimulations/MNI152NLin2009bAsym/initialize';
     const side = 'rh';
     const OSSFolder = path.join(patientFolder, `OSS_sim_files_${side}`);
     const numContacts = 8;
@@ -606,12 +1049,15 @@ export default function registerFileHandlers() {
 
     for (let i = 1; i <= numContacts; i++) {
       const contactFolder = path.join(OSSFolder, `ResultsE1C${i}`);
-      const niiFilePath = path.join(contactFolder, 'E_field_solution_Lattice.nii');
+      const niiFilePath = path.join(
+        contactFolder,
+        'E_field_solution_Lattice.nii',
+      );
       // const fileName = `sub-15454_sim-4D_efield_model-ossdbs_hemi-R_desc-C${i}.nii`;
       // const niiFilePath = path.join(patientFolder, fileName);
       try {
         const fileBuffer = fs.readFileSync(niiFilePath);
-        results[i-1] = fileBuffer.buffer;
+        results[i - 1] = fileBuffer.buffer;
       } catch (error) {
         console.error(`Error reading file for contact E1C${i}:`, error);
         results[`E1C${i}`] = null;
@@ -649,7 +1095,7 @@ export default function registerFileHandlers() {
 
   ipcMain.handle('file-reader', async () => {
     const result = await dialog.showOpenDialog({
-      properties: ['openDirectory']
+      properties: ['openDirectory'],
     });
     return result.canceled ? null : result.filePaths[0];
   });
@@ -661,10 +1107,26 @@ export default function registerFileHandlers() {
     const userDataPath = stimulationData.path;
     const uniqueFolderName = `miniset_${Date.now()}`;
     for (const patientId of selectedPatients) {
-      const patientFolder = path.join(userDataPath, 'derivatives', 'leaddbs', patientId);
+      const patientFolder = path.join(
+        userDataPath,
+        'derivatives',
+        'leaddbs',
+        patientId,
+      );
       const rawdataFolder = path.join(userDataPath, 'rawdata', patientId);
-      const newPatientFolder = path.join(folderPath, uniqueFolderName, 'derivatives', 'leaddbs', patientId);
-      const newRawdataFolder = path.join(folderPath, uniqueFolderName, 'rawdata', patientId);
+      const newPatientFolder = path.join(
+        folderPath,
+        uniqueFolderName,
+        'derivatives',
+        'leaddbs',
+        patientId,
+      );
+      const newRawdataFolder = path.join(
+        folderPath,
+        uniqueFolderName,
+        'rawdata',
+        patientId,
+      );
       // Ensure the new patient directory exists
       if (!fs.existsSync(newPatientFolder)) {
         fs.mkdirSync(newPatientFolder, { recursive: true });
@@ -693,22 +1155,28 @@ export default function registerFileHandlers() {
         } catch (error) {
           console.error(`Error copying ${subfolder} directory:`, error);
         }
-
-
       });
 
-        // Define the subfolders to copy
-        const rawSubfolders = ['rawdata'];
-        const rawSrcFile = path.join(rawdataFolder, 'ses-preop', 'anat', `${patientId}_ses-preop_acq-iso_T1w.nii.gz`);
-        const rawDestFolder = newRawdataFolder;
+      // Define the subfolders to copy
+      const rawSubfolders = ['rawdata'];
+      const rawSrcFile = path.join(
+        rawdataFolder,
+        'ses-preop',
+        'anat',
+        `${patientId}_ses-preop_acq-iso_T1w.nii.gz`,
+      );
+      const rawDestFolder = newRawdataFolder;
 
-        // Ensure the raw destination directory exists
-        if (!fs.existsSync(rawDestFolder)) {
-          fs.mkdirSync(rawDestFolder, { recursive: true });
-        }
+      // Ensure the raw destination directory exists
+      if (!fs.existsSync(rawDestFolder)) {
+        fs.mkdirSync(rawDestFolder, { recursive: true });
+      }
 
-        const rawDestFile = path.join(rawDestFolder, `${patientId}_ses-preop_acq-iso_T1w.nii.gz`);
-        fs.copyFileSync(rawSrcFile, rawDestFile);
+      const rawDestFile = path.join(
+        rawDestFolder,
+        `${patientId}_ses-preop_acq-iso_T1w.nii.gz`,
+      );
+      fs.copyFileSync(rawSrcFile, rawDestFile);
     }
   });
 
@@ -722,12 +1190,15 @@ export default function registerFileHandlers() {
 
     const result = await dialog.showOpenDialog({
       title: 'Select a folder to save clinical data',
-      properties: ['openDirectory', 'createDirectory']
+      properties: ['openDirectory', 'createDirectory'],
     });
 
     if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
       // User cancelled; abort saving and reply with error
-      event.reply('download-clinical-data-error', 'User cancelled folder selection.');
+      event.reply(
+        'download-clinical-data-error',
+        'User cancelled folder selection.',
+      );
       return;
     }
 
@@ -750,7 +1221,10 @@ export default function registerFileHandlers() {
   });
 
   ipcMain.handle('get-clinical-data-for-plotting', async (event, message) => {
-    const clinicalDataPath = path.join('/Users/savirmadan/Downloads', 'allClinicalScores.json');
+    const clinicalDataPath = path.join(
+      '/Users/savirmadan/Downloads',
+      'allClinicalScores.json',
+    );
     const data = fs.readFileSync(clinicalDataPath, 'utf8');
     const clinicalData = JSON.parse(data);
     return clinicalData;
@@ -807,7 +1281,10 @@ export default function registerFileHandlers() {
     if (!fs.existsSync(stimDir)) {
       fs.mkdirSync(stimDir, { recursive: true });
     }
-    const filePath = path.join(stimDir, `${data.selectedPatientId}_stimparameters.tsv`);
+    const filePath = path.join(
+      stimDir,
+      `${data.selectedPatientId}_stimparameters.tsv`,
+    );
     fs.writeFileSync(filePath, data.TSV);
 
     data.electrodeCSVs.forEach(
@@ -851,14 +1328,21 @@ export default function registerFileHandlers() {
             path.join(__dirname, '..', '..', 'public', templateName),
           ];
 
-          const foundPath = fallbackPaths.find(p => fs.existsSync(p));
+          const foundPath = fallbackPaths.find((p) => fs.existsSync(p));
           if (foundPath) {
             templatePath = foundPath;
           }
         }
       } else {
         // In development, read from public folder relative to project root
-        templatePath = path.join(__dirname, '..', '..', '..', 'public', templateName);
+        templatePath = path.join(
+          __dirname,
+          '..',
+          '..',
+          '..',
+          'public',
+          templateName,
+        );
       }
 
       if (!fs.existsSync(templatePath)) {
@@ -868,23 +1352,41 @@ export default function registerFileHandlers() {
       }
 
       const fileBuffer = fs.readFileSync(templatePath);
-      return fileBuffer.buffer;
+      return fileBuffer.buffer.slice(
+        fileBuffer.byteOffset,
+        fileBuffer.byteOffset + fileBuffer.byteLength,
+      );
     } catch (error) {
       console.error(`Error reading template ${templateName}:`, error);
       throw error;
     }
   });
 
-  ipcMain.handle('load_seeg_reco', async (event, directoryPath, selectedPatientId) => {
-    const data = await fs.readFileSync(path.join(directoryPath, 'derivatives', 'leaddbs', selectedPatientId, 'clinical', `${selectedPatientId}_desc-reconstruction.json`), 'utf8');
-    const reconstructionData = JSON.parse(data);
-    return reconstructionData;
-  });
+  ipcMain.handle(
+    'load_seeg_reco',
+    async (event, directoryPath, selectedPatientId) => {
+      const data = await fs.readFileSync(
+        path.join(
+          directoryPath,
+          'derivatives',
+          'leaddbs',
+          selectedPatientId,
+          'clinical',
+          `${selectedPatientId}_desc-reconstruction.json`,
+        ),
+        'utf8',
+      );
+      const reconstructionData = JSON.parse(data);
+      return reconstructionData;
+    },
+  );
 
   ipcMain.handle('load_patient_list', async (event, directoryPath) => {
-    const data = fs.readFileSync(path.join(directoryPath, 'participants.json'), 'utf8');
+    const data = fs.readFileSync(
+      path.join(directoryPath, 'participants.json'),
+      'utf8',
+    );
     const patients = JSON.parse(data);
     return patients;
   });
-
 }

@@ -13,7 +13,14 @@ import UPDRSAnalysisComponent from '../analysis/UPDRSAnalysisComponent';
 
 function GroupStats() {
   const location = useLocation();
-  const { patient, timeline, directoryPath, leadDBS } = location.state || {};
+  const {
+    patient = { id: '' },
+    timeline: rawTimeline,
+    directoryPath,
+    leadDBS,
+  } = location.state || {};
+  // Guard against being mounted without navigation state.
+  const timeline = Array.isArray(rawTimeline) ? rawTimeline : [];
   const navigate = useNavigate();
   const [scoreTypes, setScoreTypes] = useState(['UPDRS', 'Y-BOCS']);
   const [selectedScoreType, setSelectedScoreType] = useState('UPDRS');
