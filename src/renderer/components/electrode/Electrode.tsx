@@ -2526,22 +2526,22 @@ function Electrode({
     }
   }
 
-  // The on-screen arrows are intentionally inverted relative to the tier
-  // order: ↑ steers the current toward the distal tip (contact 1).
   const handlePercAmpChangeUp = () => {
-    applyDirectionalSteering('down');
+    applyDirectionalSteering('up');
   };
 
+  // The rotation arrows are intentionally inverted relative to the internal
+  // face order: ↻ turns the current toward the previous face.
   const handlePercAmpChangeClockwise = () => {
-    applyDirectionalSteering('clockwise');
-  };
-
-  const handlePercAmpChangeCounterClockwise = () => {
     applyDirectionalSteering('counterclockwise');
   };
 
+  const handlePercAmpChangeCounterClockwise = () => {
+    applyDirectionalSteering('clockwise');
+  };
+
   const handlePercAmpChangeDown = () => {
-    applyDirectionalSteering('up');
+    applyDirectionalSteering('down');
   };
 
   useEffect(() => {
@@ -3445,7 +3445,7 @@ function Electrode({
                     variant="secondary"
                     onClick={handlePercAmpChangeUp}
                     disabled={steeringUnit === 'V'}
-                    title="Shift the current 10% of a level toward the tip"
+                    title="Shift the current 10% of a level toward the proximal end"
                     style={{
                       borderRadius: '10px',
                       backgroundColor: 'white',
@@ -3477,7 +3477,7 @@ function Electrode({
                     variant="secondary"
                     onClick={handlePercAmpChangeDown}
                     disabled={steeringUnit === 'V'}
-                    title="Shift the current 10% of a level away from the tip"
+                    title="Shift the current 10% of a level toward the distal tip"
                     style={{
                       borderRadius: '10px',
                       backgroundColor: 'white',
