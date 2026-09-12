@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx';
 import PairedTTestComponent from '../components/analysis/PairedTTestComponent';
 import BoxPlotComponent from '../components/analysis/BoxPlotComponent';
 import UPDRSAnalysisComponent from '../components/analysis/UPDRSAnalysisComponent';
+import AddScoreTypeDialog from '../components/clinical/AddScoreTypeDialog';
 import '../assets/icons/icons.css';
 
 // Use direct file paths - no webpack processing needed
@@ -53,11 +54,28 @@ function ClinicalScores() {
     '3.17e: Rest tremor amplitude- Lip/jaw': 0,
     '3.18: Constancy of rest tremor': 0,
   };
+  const updrsDefinitionRef = React.useRef(UPDRS);
   const [totalScores, setTotalScores] = useState();
   const [scoreTypes, setScoreTypes] = useState([]);
   const [selectedScoreType, setSelectedScoreType] = useState('UPDRS');
   const [initialScores, setInitialScores] = useState(UPDRS);
   const [allScores, setAllScores] = useState([]);
+  const [isDirty, setIsDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState('');
+  const [scoreTypeStatus, setScoreTypeStatus] = useState('');
+  const [previewImage, setPreviewImage] = useState(null);
+
+  useEffect(() => {
+    const warnBeforeUnload = (event) => {
+      if (!isDirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [isDirty]);
 
   /* Setting up loading in of preloaded score types that exist for this particular patient */
 
@@ -68,20 +86,13 @@ function ClinicalScores() {
         'get-clinical-scores-types',
         'text',
       );
-      if (scores) {
-        console.log('scores: ', scores);
-        setScoreTypes(Object.keys(scores));
-        // setSelectedScoreType(Object.keys(scores)[0]);
-        // setInitialScores(scores[Object.keys(scores)[0]]);
-        setTotalScores(scores);
-        // setPatients([
-        //   {
-        //     id: patient.id,
-        //     baseline: { ...scores[Object.keys(scores)[0]] },
-        //     postop: { ...scores[Object.keys(scores)[0]] },
-        //   },
-        // ]);
-      }
+      const availableScores = scores || {
+        UPDRS: updrsDefinitionRef.current,
+      };
+      console.log('scores: ', availableScores);
+      setScoreTypes(Object.keys(availableScores));
+      setTotalScores(availableScores);
+      setAllScores(availableScores);
     };
 
     loadScores();
@@ -199,16 +210,29 @@ function ClinicalScores() {
   ]);
 
   const handleScoreChange = (score) => {
-    console.log('Total score change: ', allScores[score]);
-    setInitialScores(allScores[score]);
+    if (score === selectedScoreType) return;
+    const selectedScores = allScores[score];
+    if (!selectedScores) return;
+    if (
+      isDirty &&
+      !window.confirm(
+        'You have unsaved score changes. Discard them and switch score type?',
+      )
+    ) {
+      return;
+    }
+    console.log('Total score change: ', selectedScores);
+    setInitialScores(selectedScores);
     setSelectedScoreType(score);
     setPatients([
       {
         id: patient.id,
-        baseline: { ...allScores[score] },
-        postop: { ...allScores[score] },
+        baseline: { ...selectedScores },
+        postop: { ...selectedScores },
       },
     ]);
+    setIsDirty(false);
+    setSaveStatus('');
     // if (score === 'UPDRS') {
     //   setInitialScores(UPDRS);
     // } else if (score === 'Y-BOCS') {
@@ -233,98 +257,78 @@ function ClinicalScores() {
   const keys = Object.keys(initialScores);
   const headerChunks = chunkArray(keys, columnsPerRow);
 
-  window.electron.ipcRenderer.sendMessage(
-    'import-file-clinical',
-    patient.id,
-    timeline,
-    directoryPath,
-    leadDBS,
-  );
-
   useEffect(() => {
-    // Ensure that the ipcRenderer is available
-    if (window.electron && window.electron.ipcRenderer) {
-      // Event listener for import-file
-      const handleImportFile = (arg) => {
-        const importedScores = arg;
-        if (importedScores === 'File not found') {
-          setAllScores(totalScores);
-          setPatients([
-            {
-              id: patient.id,
-              baseline: { ...initialScores(Object.keys(totalScores)[0]) },
-              postop: { ...initialScores(Object.keys(totalScores)[0]) },
-            },
-          ]);
-          setSelectedScoreType(Object.keys(totalScores)[0]);
-          return;
-        }
-        console.log('initialScores: ', totalScores);
-        const newAllScores = {
-          ...totalScores,
-        };
-        Object.keys(importedScores).forEach((score) => {
-          console.log('score: ', score);
+    if (!totalScores || !patient || !window.electron?.ipcRenderer)
+      return undefined;
 
-          newAllScores[score] = importedScores[score];
-          if (newAllScores[score].hasOwnProperty('Timeline')) {
-            delete newAllScores[score].Timeline;
-          }
-          // if (newAllScores[score].hasOwnProperty('Levodopa Equivalent Dose of DBS')) {
-          //   const updatedLEDD = {};
-          //   updatedLEDD['Levodopa Equivalent Daily Dose'] = newAllScores[score]['Levodopa Equivalent Dose of DBS'];
-          //   newAllScores[score] = updatedLEDD;
-          // }
-        });
-        console.log('newAllScores: ', newAllScores);
-        setAllScores(newAllScores);
-        setScoreTypes(Object.keys(newAllScores));
+    const handleImportFile = (importedScores) => {
+      const availableScoreTypes = Object.keys(totalScores);
+      const firstAvailableType = availableScoreTypes[0] || 'UPDRS';
+      const firstAvailableScores = totalScores[firstAvailableType] || {};
+
+      if (
+        importedScores === 'File not found' ||
+        !importedScores ||
+        Object.keys(importedScores).length === 0
+      ) {
+        setAllScores(totalScores);
+        setScoreTypes(availableScoreTypes);
+        setInitialScores(firstAvailableScores);
         setPatients([
           {
             id: patient.id,
-            baseline: importedScores[Object.keys(importedScores)[0]],
-            postop: { ...initialScores },
+            baseline: { ...firstAvailableScores },
+            postop: { ...firstAvailableScores },
           },
         ]);
-        setSelectedScoreType(Object.keys(importedScores)[0]);
-        setInitialScores(importedScores[Object.keys(importedScores)[0]]);
-        // const matchingScores = Object.keys(totalScores).find((score) => {
-        //   const totalScoreItems = Object.keys(totalScores[score]);
-        //   const importedScoreItems = Object.keys(importedScores);
-        //   return (
-        //     totalScoreItems.length === importedScoreItems.length &&
-        //     totalScoreItems.every((item) => importedScoreItems.includes(item))
-        //   );
-        // });
+        setSelectedScoreType(firstAvailableType);
+        setIsDirty(false);
+        return;
+      }
 
-        // if (matchingScores) {
-        //   console.log('Matching score found: ', matchingScores);
-        // } else {
-        //   console.log('No matching score found');
-        // }
-        // if (importedScores === 'File not found') {
-        //   console.log('No File Found');
-        // } else {
-        //   setPatients([
-        //     {
-        //       id: patient.id,
-        //       baseline: importedScores,
-        //       postop: { ...initialScores },
-        //     },
-        //   ]);
-        //   setAllScores(newAllScores);
-        // }
-      };
+      const newAllScores = { ...totalScores };
+      Object.keys(importedScores).forEach((score) => {
+        const importedScore = { ...importedScores[score] };
+        delete importedScore.Timeline;
+        newAllScores[score] = importedScore;
+      });
 
-      // Attach listeners using 'once' so that it only listens for the event once
-      window.electron.ipcRenderer.once(
-        'import-file-clinical',
-        handleImportFile,
-      );
-    } else {
+      const firstImportedType = Object.keys(importedScores)[0];
+      const firstImportedScores = newAllScores[firstImportedType];
+      setAllScores(newAllScores);
+      setScoreTypes(Object.keys(newAllScores));
+      setPatients([
+        {
+          id: patient.id,
+          baseline: { ...firstImportedScores },
+          postop: { ...firstImportedScores },
+        },
+      ]);
+      setSelectedScoreType(firstImportedType);
+      setInitialScores(firstImportedScores);
+      setIsDirty(false);
+    };
+
+    const unsubscribe = window.electron.ipcRenderer.on(
+      'import-file-clinical',
+      handleImportFile,
+    );
+    window.electron.ipcRenderer.sendMessage(
+      'import-file-clinical',
+      patient.id,
+      timeline,
+      directoryPath,
+      leadDBS,
+    );
+
+    return unsubscribe;
+  }, [totalScores, patient, timeline, directoryPath, leadDBS]);
+
+  useEffect(() => {
+    if (!window.electron?.ipcRenderer) {
       console.error('ipcRenderer is not available');
     }
-  }, [totalScores]);
+  }, []);
 
   const addPatient = () => {
     setPatients([
@@ -351,9 +355,20 @@ function ClinicalScores() {
   };
 
   const updateScore = (patientIndex, timePoint, field, value) => {
-    const updatedPatients = [...patients];
-    updatedPatients[patientIndex][timePoint][field] = value;
-    setPatients(updatedPatients);
+    setPatients((currentPatients) =>
+      currentPatients.map((currentPatient, index) => {
+        if (index !== patientIndex) return currentPatient;
+        return {
+          ...currentPatient,
+          [timePoint]: {
+            ...currentPatient[timePoint],
+            [field]: Number.isFinite(value) ? value : 0,
+          },
+        };
+      }),
+    );
+    setIsDirty(true);
+    setSaveStatus('Unsaved changes');
   };
 
   const updatePatientID = (patientIndex, newID) => {
@@ -423,24 +438,28 @@ function ClinicalScores() {
                           }
                           return imageKey && imageSrc ? (
                             <div className="tooltip-container">
-                              <img
-                                src={imageSrc}
-                                alt={key}
-                                title={key}
-                                className="updrs-image"
-                                onError={(e) => {
-                                  console.error(
-                                    `Failed to load image for ${key} (mapped to ${imageKey}):`,
-                                    imageSrc,
-                                  );
-                                  e.target.style.display = 'none';
-                                }}
-                                // style={{
-                                //   opacity: calculateOpacity(
-                                //     patients[0][timePoint][key],
-                                //   ),
-                                // }}
-                              />
+                              <button
+                                type="button"
+                                className="updrs-preview-button"
+                                aria-label={`Enlarge ${key} illustration`}
+                                onClick={() =>
+                                  setPreviewImage({ src: imageSrc, label: key })
+                                }
+                              >
+                                <img
+                                  src={imageSrc}
+                                  alt={key}
+                                  title={`${key} — click to enlarge`}
+                                  className="updrs-image"
+                                  onError={(e) => {
+                                    console.error(
+                                      `Failed to load image for ${key} (mapped to ${imageKey}):`,
+                                      imageSrc,
+                                    );
+                                    e.target.style.display = 'none';
+                                  }}
+                                />
+                              </button>
                               <br />
                               <span className="tooltip-text">{key}</span>
                             </div>
@@ -557,6 +576,8 @@ function ClinicalScores() {
       });
 
       setPatients(updatedPatients);
+      setIsDirty(true);
+      setSaveStatus('Unsaved changes');
     };
     reader.readAsArrayBuffer(file);
   };
@@ -614,43 +635,87 @@ function ClinicalScores() {
     setBaselineValues(baselineScores);
   };
 
-  const sendDataToMain = () => {
-    console.log(patients);
-    console.log(patients[0].baseline);
-    window.electron.ipcRenderer.sendMessage(
-      'save-file-clinical',
-      patients[0].baseline,
-      location.state,
-      selectedScoreType,
-    );
+  const sendDataToMain = async () => {
+    if (!patients[0] || isSaving) return;
+
+    setIsSaving(true);
+    setSaveStatus('Saving…');
+    try {
+      const result = await window.electron.ipcRenderer.invoke(
+        'save-file-clinical',
+        patients[0].baseline,
+        location.state,
+        selectedScoreType,
+      );
+      if (!result?.success) {
+        throw new Error(result.error || 'Clinical scores could not be saved.');
+      }
+      setIsDirty(false);
+      setSaveStatus('Clinical scores saved.');
+    } catch (error) {
+      console.error('Error saving clinical scores:', error);
+      setSaveStatus(
+        error instanceof Error
+          ? `Save failed: ${error.message}`
+          : 'Clinical scores could not be saved.',
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
   const [addScore, setAddScore] = useState(false);
   const handleAddScoreType = () => {
-    console.log('add score type');
+    setScoreTypeStatus('');
     setAddScore(true);
   };
 
-  const [newScoreName, setNewScoreName] = useState('');
-  const [newScoreValues, setNewScoreValues] = useState('');
+  // Called by the dialog with a validated name and item list; throws so the
+  // dialog can show the failure inline.
+  const handleCreateScoreType = async (scoreName, scoreItems) => {
+    const scoreDefinition = scoreItems.reduce((acc, item) => {
+      acc[item] = 0;
+      return acc;
+    }, {});
 
-  const handleAddScore = () => {
-    console.log('add score');
-    console.log(newScoreName);
-    console.log(newScoreValues);
-    const newScore = {
-      [newScoreName]: newScoreValues.split(',').reduce((acc, item) => {
-        acc[item.trim()] = 0;
-        return acc;
-      }, {}),
-    };
-
-    console.log(newScore);
-    window.electron.ipcRenderer.sendMessage(
+    const result = await window.electron.ipcRenderer.invoke(
       'add-score-type',
-      newScoreName,
-      newScore,
+      scoreName,
+      { [scoreName]: scoreDefinition },
     );
-    // setAddScore(false);
+    if (!result?.success) {
+      throw new Error(result?.error || 'The score type could not be added.');
+    }
+
+    setAllScores((currentScores) => ({
+      ...currentScores,
+      [scoreName]: scoreDefinition,
+    }));
+    setScoreTypes((currentTypes) => [...currentTypes, scoreName]);
+    setSelectedScoreType(scoreName);
+    setInitialScores(scoreDefinition);
+    setPatients([
+      {
+        id: patient.id,
+        baseline: { ...scoreDefinition },
+        postop: { ...scoreDefinition },
+      },
+    ]);
+    setAddScore(false);
+    setScoreTypeStatus(`Score type "${scoreName}" added.`);
+    setSaveStatus('');
+    setIsDirty(false);
+  };
+
+  const handleBack = () => {
+    if (
+      isDirty &&
+      !window.confirm(
+        'You have unsaved clinical score changes. Leave without saving?',
+      )
+    ) {
+      return;
+    }
+    navigate(-1);
   };
 
   return (
@@ -688,37 +753,18 @@ function ClinicalScores() {
             >
               +
             </Button>
-            <Modal show={addScore} onHide={() => setAddScore(false)}>
-              <Modal.Header closeButton>
-                <Modal.Title>Create Clinical Score Type</Modal.Title>
-              </Modal.Header>
-              <Modal.Body>
-                <Form.Group controlId="newScoreType">
-                  <Form.Label>Enter New Score Type</Form.Label>
-                  <Form.Control
-                    type="text"
-                    placeholder="Enter Score Name"
-                    value={newScoreName}
-                    onChange={(e) => setNewScoreName(e.target.value)}
-                  />
-                  <Form.Control
-                    type="text"
-                    placeholder="Enter Score Values"
-                    value={newScoreValues}
-                    onChange={(e) => setNewScoreValues(e.target.value)}
-                  />
-                  <p>separated by commas (Ex: 'Obsessions', 'Compulsions')</p>
-                </Form.Group>
-              </Modal.Body>
-              <Modal.Footer>
-                <Button variant="secondary" onClick={() => setAddScore(false)}>
-                  Close
-                </Button>
-                <Button variant="primary" onClick={handleAddScore}>
-                  Add
-                </Button>
-              </Modal.Footer>
-            </Modal>
+            <AddScoreTypeDialog
+              show={addScore}
+              existingScoreTypes={scoreTypes}
+              scoreTemplates={allScores}
+              onClose={() => setAddScore(false)}
+              onCreate={handleCreateScoreType}
+            />
+            {!addScore && scoreTypeStatus && (
+              <span role="status" style={{ marginLeft: '10px' }}>
+                {scoreTypeStatus}
+              </span>
+            )}
             {/* <Button
               variant="secondary"
               onClick={() => document.getElementById('baseline-upload').click()}
@@ -786,12 +832,40 @@ function ClinicalScores() {
           )}
         </div>
       )} */}
-      <button className="export-button" onClick={() => navigate(-1)}>
+      <Modal
+        show={Boolean(previewImage)}
+        onHide={() => setPreviewImage(null)}
+        centered
+        size="lg"
+      >
+        <Modal.Header closeButton>
+          <Modal.Title>{previewImage?.label}</Modal.Title>
+        </Modal.Header>
+        <Modal.Body style={{ textAlign: 'center' }}>
+          {previewImage && (
+            <img
+              src={previewImage.src}
+              alt={previewImage.label}
+              className="updrs-image-preview"
+            />
+          )}
+        </Modal.Body>
+      </Modal>
+      <button className="export-button" onClick={handleBack}>
         Back to Patient Details
       </button>
-      <button className="export-button-final" onClick={sendDataToMain}>
-        Save Clinical Scores
+      <button
+        className="export-button-final"
+        onClick={sendDataToMain}
+        disabled={isSaving}
+      >
+        {isSaving ? 'Saving…' : 'Save Clinical Scores'}
       </button>
+      {saveStatus && (
+        <span role="status" style={{ marginLeft: '12px' }}>
+          {saveStatus}
+        </span>
+      )}
       {/* <button onClick={() => navigate('/custom-table')}>
         Add custom table
       </button> */}
