@@ -33,9 +33,11 @@ export default function App() {
   // State management
   const [directoryPath, setDirectoryPath] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState<boolean>(false);
-  const [renderKey, setRenderKey] = useState<number>(0);
   const [isLeadDBSFolder, setIsLeadDBSFolder] = useState<boolean | null>(null);
-  const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  const [dimensions, setDimensions] = useState<{
+    width: number;
+    height: number;
+  }>({ width: 0, height: 0 });
   const [zoomLevel, setZoomLevel] = useState<number>(-1);
 
   // Refs
@@ -60,9 +62,6 @@ export default function App() {
     window.electron.ipcRenderer.sendMessage('select-folder', null);
   };
 
-  // Initialize IPC communication
-  window.electron.ipcRenderer.sendMessage('import-inputdata-file', ['ping']);
-  window.electron.ipcRenderer.sendMessage('ipc-example', ['ping']);
   /**
    * Effect hook to handle folder selection and initialization
    */
@@ -70,17 +69,22 @@ export default function App() {
     // Listen for folder selection events from main process
     const unsubscribe = window.electron.ipcRenderer.on(
       'folder-selected',
-      (selectedPath: string) => {
+      (
+        selectedPath: string | null,
+        _patients: unknown,
+        detectedLeadDBS: boolean,
+      ) => {
         setDirectoryPath(selectedPath);
-        setRenderKey((prevKey) => prevKey + 1);
-        setIsLeadDBSFolder(true);
+        setIsLeadDBSFolder(Boolean(detectedLeadDBS));
       },
     );
 
     // Load saved directory path on component mount
     const loadSavedDirectory = async (): Promise<void> => {
       try {
-        const savedPath = await window.electron.ipcRenderer.invoke('get-saved-directory');
+        const savedPath = await window.electron.ipcRenderer.invoke(
+          'get-saved-directory',
+        );
         if (savedPath) {
           setDirectoryPath(savedPath);
           window.electron.ipcRenderer.sendMessage('select-folder', savedPath);
@@ -134,7 +138,10 @@ export default function App() {
 
                     {showSettings && (
                       <div className="settings-panel">
-                        <button className="select-button" onClick={selectFolder}>
+                        <button
+                          className="select-button"
+                          onClick={selectFolder}
+                        >
                           Change Directory
                         </button>
                         {directoryPath && (
@@ -145,8 +152,7 @@ export default function App() {
                         <p className="lead-dbs-status">
                           {isLeadDBSFolder
                             ? 'This is a Lead-DBS folder.'
-                            : 'This is not a Lead-DBS folder.'
-                          }
+                            : 'This is not a Lead-DBS folder.'}
                         </p>
                       </div>
                     )}
@@ -154,8 +160,8 @@ export default function App() {
 
                   {/* Main Patient Database Component */}
                   <PatientDatabase
-                    key={String(renderKey)}
                     directoryPath={directoryPath}
+                    leadDBS={Boolean(isLeadDBSFolder)}
                   />
                 </div>
               }

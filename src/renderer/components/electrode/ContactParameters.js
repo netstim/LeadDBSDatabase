@@ -1,147 +1,251 @@
 import React, { useState, useEffect } from 'react';
 import { ToggleButton, ToggleButtonGroup, TextField } from '@mui/material';
-import { styled, textAlign } from '@mui/system';
+import { styled } from '@mui/system';
 
-// Styled Components
-const StyledToggleButton = styled(ToggleButton)(({ theme }) => ({
-  // border: '1px solid #ccc',
-  // borderRadius: '8px',
-  // padding: '0.5rem 1rem',
+const CONTACT_CONTROL_WIDTH = 'clamp(104px, 9vw, 112px)';
+
+const ContactParametersRoot = styled('div')({
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'stretch',
+  width: CONTACT_CONTROL_WIDTH,
+  maxWidth: '100%',
+  minWidth: 0,
+});
+
+const StyledToggleButton = styled(ToggleButton)(() => ({
   borderColor: 'transparent',
-  fontSize: '16px',
+  minWidth: 0,
+  minHeight: 0,
+  height: '24px',
+  padding: '1px 2px',
+  fontSize: 'clamp(11px, 1vw, 13px)',
   fontWeight: 600,
-  // color: '#333', // Primary text color
-  // color: 'transparent',
+  lineHeight: 1,
+  letterSpacing: 0,
+  whiteSpace: 'nowrap',
   backgroundColor: 'transparent',
   '&.Mui-selected': {
-    backgroundColor: 'transparent', // Main primary color
-    color: '#fff', // White text when selected
-    borderColor: 'transparent', // Dark primary color
+    backgroundColor: 'transparent',
+    color: '#fff',
+    borderColor: 'transparent',
   },
   '&:hover': {
-    backgroundColor: 'transparent', // Light primary color
-    color: '#fff', // White text on hover
+    backgroundColor: 'transparent',
+    color: '#fff',
+  },
+  '&.Mui-focusVisible': {
+    outline: '2px solid rgba(255, 255, 255, 0.9)',
+    outlineOffset: '-2px',
   },
 }));
 
-const StyledToggleButtonGroup = styled(ToggleButtonGroup)(({ theme }) => ({
-  display: 'flex',
-  justifyContent: 'center',
-  gap: '0rem', // Keep gap at 0
+const StyledToggleButtonGroup = styled(ToggleButtonGroup)(() => ({
+  display: 'grid',
+  gridTemplateColumns: '2fr 1fr 1fr',
+  width: '100%',
+  height: '24px',
   '& .MuiToggleButton-root': {
-    marginLeft: '-0.15rem', // Adjust the margin to bring buttons closer
-    marginRight: '-0.15rem',
+    margin: 0,
   },
 }));
 
-const StyledTextField = styled(TextField)(({ theme }) => ({
+const StyledTextField = styled(TextField)(() => ({
+  minWidth: 0,
   '& .MuiOutlinedInput-root': {
-    // borderRadius: '2px',
-    width: '100px',
-    fontSize: '32px',
-    fontWeight: '600',
-    paddingLeft: '10px',
-    textAlign: 'center',
+    width: '100%',
+    height: '30px',
+    minWidth: 0,
+    padding: 0,
     color: 'white',
+    fontWeight: 600,
+    fontVariantNumeric: 'tabular-nums',
+    overflow: 'hidden',
     '& fieldset': {
-      borderColor: 'transparent', // Light gray border
+      borderColor: 'transparent',
     },
     '&:hover fieldset': {
-      borderColor: 'transparent', // Main primary color on hover
+      borderColor: 'rgba(255, 255, 255, 0.45)',
     },
     '&.Mui-focused fieldset': {
-      // borderColor: '#1976d2', // Main primary color when focused
+      borderColor: 'rgba(255, 255, 255, 0.9)',
     },
   },
-  '& .MuiInputLabel-root': {
-    fontSize: '14px',
-    color: '#fff', // Secondary text color
+  '& .MuiOutlinedInput-input': {
+    boxSizing: 'border-box',
+    height: '30px',
+    minWidth: 0,
+    padding: '0 2px',
+    textAlign: 'center',
+    lineHeight: 1,
+    MozAppearance: 'textfield',
+    '&::-webkit-inner-spin-button, &::-webkit-outer-spin-button': {
+      margin: 0,
+      WebkitAppearance: 'none',
+    },
   },
 }));
 
+const QuantityRow = styled('div')({
+  display: 'grid',
+  gridTemplateColumns: 'minmax(0, 1fr) auto',
+  alignItems: 'center',
+  width: '100%',
+  minWidth: 0,
+  marginTop: '1px',
+  columnGap: '2px',
+});
+
+const QuantityUnit = styled('span')({
+  color: 'white',
+  fontSize: 'clamp(10px, 0.85vw, 12px)',
+  fontWeight: 600,
+  lineHeight: 1,
+  whiteSpace: 'nowrap',
+});
+
+const formatQuantityForDisplay = (quantity) => {
+  const numericQuantity = Number(quantity);
+  if (!Number.isFinite(numericQuantity)) return '0';
+  if (Number.isInteger(numericQuantity)) return String(numericQuantity);
+
+  const decimalPlaces = Math.abs(numericQuantity) < 0.01 ? 4 : 2;
+  return String(Number(numericQuantity.toFixed(decimalPlaces)));
+};
+
+const quantityFontSize = (displayQuantity) => {
+  if (displayQuantity.length <= 3) return '24px';
+  if (displayQuantity.length <= 5) return '21px';
+  if (displayQuantity.length <= 7) return '18px';
+  return '15px';
+};
+
 function ContactParameters({
-  value,
   switchPosition,
   quantity,
+  maxQuantity = Number.POSITIVE_INFINITY,
+  unit = '',
+  contactName = 'Contact',
+  quantityReadOnly = false,
   onChange = () => {},
   onQuantityChange = () => {},
 }) {
   const [currentPosition, setCurrentPosition] = useState(switchPosition);
-  const [currentQuantity, setCurrentQuantity] = useState(quantity);
+  const [currentQuantity, setCurrentQuantity] = useState(quantity ?? 0);
+  const [quantityDraft, setQuantityDraft] = useState(
+    formatQuantityForDisplay(quantity ?? 0),
+  );
+  const [isEditingQuantity, setIsEditingQuantity] = useState(false);
 
   useEffect(() => {
     setCurrentPosition(switchPosition);
-    setCurrentQuantity(quantity);
-  }, [switchPosition, quantity]);
+    setCurrentQuantity(quantity ?? 0);
+    if (!isEditingQuantity) {
+      setQuantityDraft(formatQuantityForDisplay(quantity ?? 0));
+    }
+  }, [switchPosition, quantity, isEditingQuantity]);
 
   const handleSwitchChange = (event, newPosition) => {
     if (newPosition !== null) {
       setCurrentPosition(newPosition);
-      onChange(newPosition);
-
       if (newPosition === 'left') {
-        setCurrentQuantity(0); // Reset quantity when switching to 'left'
-        onQuantityChange(newPosition, 0);
+        setCurrentQuantity(0);
+        setQuantityDraft('0');
       }
+      // Polarity and its implied quantity are one state transition. Dispatching
+      // a second quantity callback here lets stale parent state overwrite it.
+      onChange(newPosition);
     }
   };
 
-  const handleQuantityChange = (event) => {
-    const quantityValue = parseFloat(event.target.value) || 0;
-    console.log('Quantity Value:', quantityValue);
+  const commitQuantity = (rawQuantity) => {
+    const parsedQuantity = Number.parseFloat(rawQuantity);
+    if (!Number.isFinite(parsedQuantity)) {
+      setQuantityDraft(formatQuantityForDisplay(currentQuantity));
+      return;
+    }
+    const finiteMaximum = Number.isFinite(maxQuantity)
+      ? Math.max(0, maxQuantity)
+      : Number.POSITIVE_INFINITY;
+    const quantityValue = Math.min(Math.max(parsedQuantity, 0), finiteMaximum);
+    let nextPosition = currentPosition;
     if (quantityValue !== 0 && currentPosition === 'left') {
-      setCurrentPosition('center'); // Automatically switch to 'center' if quantity is adjusted from 'left'
-      onChange('center');
+      nextPosition = 'center';
+      setCurrentPosition(nextPosition);
     }
 
     setCurrentQuantity(quantityValue);
-    onQuantityChange(currentPosition, quantityValue);
-    // onQuantityChange(quantityValue, currentPosition);
+    setQuantityDraft(formatQuantityForDisplay(quantityValue));
+    onQuantityChange(nextPosition, quantityValue);
   };
 
+  const handleQuantityChange = (event) => {
+    setQuantityDraft(event.target.value);
+  };
+
+  const handleQuantityBlur = (event) => {
+    setIsEditingQuantity(false);
+    commitQuantity(event.target.value);
+  };
+
+  const displayQuantity = isEditingQuantity
+    ? quantityDraft
+    : formatQuantityForDisplay(currentQuantity);
+  const exactQuantityLabel = `${currentQuantity}${unit ? ` ${unit}` : ''}`;
+
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-      }}
-    >
+    <ContactParametersRoot>
       <StyledToggleButtonGroup
         value={currentPosition}
         exclusive
         onChange={handleSwitchChange}
-        aria-label="contact parameters"
+        aria-label="Contact polarity"
       >
-        <StyledToggleButton value="left" aria-label="left">
+        <StyledToggleButton value="left" aria-label="Off">
           OFF
         </StyledToggleButton>
-        <StyledToggleButton value="center" aria-label="center">
+        <StyledToggleButton value="center" aria-label="Negative">
           -
         </StyledToggleButton>
-        <StyledToggleButton value="right" aria-label="right">
+        <StyledToggleButton value="right" aria-label="Positive">
           +
         </StyledToggleButton>
       </StyledToggleButtonGroup>
 
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'center',
-          marginTop: '-40px',
-          marginLeft: '40px',
-        }}
-      >
+      <QuantityRow>
         <StyledTextField
           type="number"
-          inputProps={{ min: 0, step: "any" }}
-          value={currentQuantity}
+          disabled={quantityReadOnly}
+          inputProps={{
+            min: 0,
+            max: Number.isFinite(maxQuantity)
+              ? Math.max(0, maxQuantity)
+              : undefined,
+            step: 'any',
+            'aria-label': `${contactName} quantity${unit ? ` in ${unit}` : ''}`,
+            'aria-valuetext': exactQuantityLabel,
+            title: `Exact contact quantity: ${exactQuantityLabel}`,
+          }}
+          value={displayQuantity}
           onChange={handleQuantityChange}
+          onFocus={(event) => {
+            setIsEditingQuantity(true);
+            event.currentTarget.select();
+          }}
+          onBlur={handleQuantityBlur}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.target.blur();
+          }}
           size="small"
-          // variant="standard"
+          sx={{
+            '& .MuiOutlinedInput-input': {
+              fontSize: quantityFontSize(displayQuantity),
+            },
+          }}
         />
-      </div>
-    </div>
+        {unit && <QuantityUnit aria-hidden="true">{unit}</QuantityUnit>}
+      </QuantityRow>
+    </ContactParametersRoot>
   );
 }
 

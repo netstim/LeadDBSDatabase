@@ -1,110 +1,170 @@
-name: Build • ERB
+name: Build LeadDBS Programmer ZIPs
 
 on:
   push:
-    branches: [ publish, publish_2 ]
-    tags: [ 'v*' ]
+    branches: [main, publish, publish_2]
+    tags: ['v*']
   pull_request:
 
 jobs:
   build:
+    name: Package ${{ matrix.lead_arch }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - os: macos-15
+            platform: mac
+            electron_arch: arm64
+            lead_arch: maca64
+          - os: macos-15-intel
+            platform: mac
+            electron_arch: x64
+            lead_arch: maci64
+          - os: windows-latest
+            platform: win
+            electron_arch: x64
+            # Historical Lead-DBS asset label; the executable is still x64.
+            lead_arch: win32
+          - os: ubuntu-latest
+            platform: linux
+            electron_arch: x64
+            lead_arch: glnxa64
 
     env:
-      CI: "true"
-      ELECTRON_BUILDER_DEBUG: "true"
-      # avoid hard links on some runners/filesystems
-      USE_HARD_LINKS: "false"
-      # skip notarization unless creds provided
-      SKIP_NOTARIZE: "1"
+      CI: 'true'
+      USE_HARD_LINKS: 'false'
+      SKIP_NOTARIZE: '1'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Node
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
-      # Linux system deps commonly required by Electron packaging
-      - name: Install Linux deps
-        if: runner.os == 'Linux'
+      - name: Install Linux packaging dependencies
+        if: matrix.platform == 'linux'
+        shell: bash
         run: |
           set -euxo pipefail
           sudo apt-get update
-          # Try the legacy name first (22.04), fall back to t64 (24.04)
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxkbfile-dev libsecret-1-dev \
             libgtk-3-0 libnss3 libxss1 libgbm1 fakeroot rpm || true
-          # Handle the asound rename on 24.04
           if ! dpkg -s libasound2 >/dev/null 2>&1; then
             sudo apt-get install -y --no-install-recommends libasound2t64
           fi
 
-      # (Optional but helpful) Show environment and versions
-      - run: node -v && npm -v && npx electron-builder --version
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
 
-      # If your postinstall is flaky in CI, uncomment the next line and the two lines after install:
-      # - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: npm ci --no-audit --no-fund
-
-      # If you used --ignore-scripts above, then:
-      # - run: npx electron-builder install-app-deps
-      # - run: npm run build:dll
-
-      - name: Build & Package (per OS)
+      - name: Build application
         shell: bash
         run: |
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            # Force only arm64 on CI to avoid cross-arch issues
-            export CSC_IDENTITY_AUTO_DISCOVERY=false
-            npm run package
-          fi
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            npm run package:win
-          fi
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            npm run package:linux
-          fi
+          npx ts-node ./.erb/scripts/clean.js dist
+          npm run build
 
-      - name: Upload artifacts
-        if: always()
+      - name: Package macOS ZIP
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npx electron-builder \
+            --${{ matrix.platform }} zip \
+            --${{ matrix.electron_arch }} \
+            --publish never \
+            --config.artifactName=LeadDBSProgrammer_${{ matrix.lead_arch }}.zip
+
+      - name: Package portable application
+        if: matrix.platform != 'mac'
+        shell: bash
+        run: |
+          npx electron-builder \
+            --${{ matrix.platform }} \
+            --${{ matrix.electron_arch }} \
+            --dir \
+            --publish never
+
+      - name: Wrap Windows application for Lead-DBS
+        if: matrix.platform == 'win'
+        shell: bash
+        run: |
+          node .github/scripts/lead-dbs-zip.cjs wrap \
+            release/build/win-unpacked \
+            release/build/LeadDBSProgrammer_win32.zip \
+            win32
+
+      - name: Wrap Linux application for Lead-DBS
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          node .github/scripts/lead-dbs-zip.cjs wrap \
+            release/build/linux-unpacked \
+            release/build/LeadDBSProgrammer_glnxa64.zip \
+            glnxa64
+
+      - name: Verify release ZIP
+        shell: bash
+        run: |
+          node .github/scripts/lead-dbs-zip.cjs verify \
+            release/build/LeadDBSProgrammer_${{ matrix.lead_arch }}.zip \
+            ${{ matrix.lead_arch }}
+
+      - name: Remove packaging intermediates
+        shell: bash
+        run: |
+          node .github/scripts/lead-dbs-zip.cjs prune \
+            release/build \
+            release/build/LeadDBSProgrammer_${{ matrix.lead_arch }}.zip
+
+      - name: Upload release ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ runner.os }}-artifacts
-          path: |
-            release/build/**/*
-            !release/build/*.blockmap
-            !release/build/latest*.yml
+          name: LeadDBSProgrammer-${{ matrix.lead_arch }}
+          path: release/build/LeadDBSProgrammer_${{ matrix.lead_arch }}.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
-      - name: Upload builder logs (if present)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ runner.os }}-logs
-          path: |
-            ~/.cache/electron-builder/logs/**/*
-          if-no-files-found: ignore
-
-  # Optional: attach to a GitHub Release when tagging (vX.Y.Z)
   release:
+    name: Publish four release ZIPs
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download release ZIPs
+        uses: actions/download-artifact@v4
         with:
-          path: ./artifacts
-      - uses: softprops/action-gh-release@v2
+          pattern: LeadDBSProgrammer-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Verify exact release set
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(maca64 maci64 win32 glnxa64)
+          for arch in "${expected[@]}"; do
+            test -f "artifacts/LeadDBSProgrammer_${arch}.zip"
+          done
+          test "$(find artifacts -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4
+
+      - name: Attach ZIPs to GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: |
+            artifacts/LeadDBSProgrammer_maca64.zip
+            artifacts/LeadDBSProgrammer_maci64.zip
+            artifacts/LeadDBSProgrammer_win32.zip
+            artifacts/LeadDBSProgrammer_glnxa64.zip
+          fail_on_unmatched_files: true
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

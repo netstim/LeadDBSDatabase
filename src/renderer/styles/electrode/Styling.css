@@ -346,7 +346,7 @@
 .triple-toggle-ipg-boston-test {
   position: absolute;
   top: 50%;
-  left: 50%;
+  left: 35%;
   transform: translate(-50%, -36%);
   z-index: 1;
   /* Keep the control inside the case oval. */
@@ -1510,7 +1510,7 @@ button:active {
 .triple-toggle-boston-test-2 {
   position: absolute;
   top: 180px;
-  left: 7px;
+  left: 30px;
   z-index: 6;
 }
 
@@ -1563,7 +1563,7 @@ button:active {
   position: absolute;
   top: 92px;
   /* The left-column graphic hugs its container's left edge. */
-  left: 43px;
+  left: 55px;
   transform: translateX(-50%);
   z-index: 6;
   width: 84px;

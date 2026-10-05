@@ -114,7 +114,7 @@ console.log('Directory: ', __dirname);
 
 let mainWindow: BrowserWindow | null = null;
 let stimulationData: any = {};
-const inputPath = '/Volumes/SM/bwh_comp/Development/netstim/LeadDBSDatabase/FakeDBSDataset';//process.argv[1];
+const inputPath = process.argv[1];
 const launchFs = require('fs');
 let launchDataLoaded = false;
 let launchDataLoadError: Error | null = null;

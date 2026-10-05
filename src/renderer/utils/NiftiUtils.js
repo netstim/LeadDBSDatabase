@@ -3,83 +3,8 @@ import * as iso from 'isosurface';
 import * as THREE from 'three';
 import * as math from 'mathjs';
 import { taubinSmoothPositions } from './meshSmoothing';
+import decodeNiftiScalarData from './niftiScalarData';
 // import * as grayscaleColormap from 'grayscale-colormap';
-
-function typedArrayFor(code) {
-  const n1 = nifti.NIFTI1; // enum with the standard codes
-
-  switch (code) {
-    case n1.TYPE_UINT8:
-      return Uint8Array; // 2  → 8‑bit unsigned
-    case n1.TYPE_INT16:
-      return Int16Array; // 4  → 16‑bit signed
-    case n1.TYPE_INT32:
-      return Int32Array; // 8  → 32‑bit signed
-    case n1.TYPE_FLOAT32:
-      return Float32Array; // 16 → 32‑bit float
-    case n1.TYPE_FLOAT64:
-      return Float64Array; // 64 → 64‑bit float
-    /* add more cases (TYPE_UINT16, TYPE_INT8, …) if your data needs them */
-    default:
-      throw new Error(`Unsupported NIfTI datatype code: ${code}`);
-  }
-}
-
-function gaussianSmooth(vox, nx, ny, nz, sigma = 1.0) {
-  const kernelSize = Math.ceil(sigma * 3) * 2 + 1;
-  const kernel = new Float32Array(kernelSize);
-  const halfSize = Math.floor(kernelSize / 2);
-  const sigma2 = sigma * sigma;
-  let sum = 0;
-
-  for (let i = -halfSize; i <= halfSize; i++) {
-    const value = Math.exp(-(i * i) / (2 * sigma2));
-    kernel[i + halfSize] = value;
-    sum += value;
-  }
-
-  for (let i = 0; i < kernelSize; i++) {
-    kernel[i] /= sum;
-  }
-
-  const smoothVox = new Float32Array(vox.length);
-
-  for (let z = 0; z < nz; z++) {
-    for (let y = 0; y < ny; y++) {
-      for (let x = 0; x < nx; x++) {
-        let sum = 0;
-        for (let dz = -halfSize; dz <= halfSize; dz++) {
-          for (let dy = -halfSize; dy <= halfSize; dy++) {
-            for (let dx = -halfSize; dx <= halfSize; dx++) {
-              const nx = x + dx;
-              const ny = y + dy;
-              const nz = z + dz;
-              if (
-                nx >= 0 &&
-                nx < nx &&
-                ny >= 0 &&
-                ny < ny &&
-                nz >= 0 &&
-                nz < nz
-              ) {
-                const index = nx + ny * nx + nz * nx * ny;
-                sum +=
-                  vox[index] *
-                  kernel[dx + halfSize] *
-                  kernel[dy + halfSize] *
-                  kernel[dz + halfSize];
-              }
-            }
-          }
-        }
-        const index = x + y * nx + z * nx * ny;
-        smoothVox[index] = sum;
-      }
-    }
-  }
-
-  return smoothVox;
-}
 
 function nii2Mesh(raw, options = {}) {
   if (!(raw instanceof ArrayBuffer)) {
@@ -92,19 +17,11 @@ function nii2Mesh(raw, options = {}) {
 
   const header = nifti.readHeader(niftiData);
   const image = nifti.readImage(header, niftiData);
-  const Typed = typedArrayFor(header.datatypeCode);
-  let vox = new Typed(image);
-  const float32Array = new Float32Array(vox.length);
-  const slope =
-    Number.isFinite(header.scl_slope) && header.scl_slope !== 0
-      ? header.scl_slope
-      : 1;
-  const intercept = Number.isFinite(header.scl_inter) ? header.scl_inter : 0;
-  for (let i = 0; i < vox.length; i++) {
-    float32Array[i] = vox[i] * slope + intercept;
-  }
-  vox = float32Array;
   const [nx, ny, nz] = header.dims.slice(1, 4);
+  if (![nx, ny, nz].every((size) => Number.isSafeInteger(size) && size > 1)) {
+    throw new Error('NIfTI surface must have three spatial dimensions of at least two voxels.');
+  }
+  const vox = decodeNiftiScalarData(image, header, nx * ny * nz);
 
   const isoLevel = Number.isFinite(options.isoLevel) ? options.isoLevel : 0.5;
   const scalar = (x, y, z) => vox[x + nx * (y + ny * z)] - isoLevel;
@@ -164,15 +81,6 @@ function nii2Mesh(raw, options = {}) {
   geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
-
-  // Set vertex colors
-  const colors = new Float32Array(positions.length);
-  for (let i = 0; i < positions.length / 3; i++) {
-    const value = vox[i];
-    const normalizedValue = Math.min(1, Math.max(0, value / 255)); // Normalize to [0, 1]
-    colors.set([normalizedValue, normalizedValue, normalizedValue], i * 3); // Grayscale color
-  }
-  // geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
   const material = new THREE.MeshStandardMaterial({
     color: 'red',

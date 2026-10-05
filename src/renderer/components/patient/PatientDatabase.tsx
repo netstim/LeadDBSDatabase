@@ -32,12 +32,15 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
+  Alert,
+  Tooltip,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { Edit, Delete, Save, Cancel } from '@mui/icons-material';
 
 // Local Components
 import { PatientContext } from '../../contexts/PatientContext';
+import ExportToLeadGroupDialog from '../group/ExportToLeadGroupDialog';
 
 // Type definitions
 interface Patient {
@@ -46,14 +49,31 @@ interface Patient {
 }
 
 interface PatientDatabaseProps {
-  key?: string;
   directoryPath: string | null;
+  leadDBS: boolean;
 }
 
-function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
-  // Initialize IPC communication
-  window.electron.ipcRenderer.sendMessage('import-inputdata-file', ['ping']);
+const getRequestedPatientIds = (launchData: any): string[] => {
+  if (
+    launchData?.scope === 'patient' &&
+    typeof launchData?.selectedPatientId === 'string' &&
+    launchData.selectedPatientId
+  ) {
+    return [launchData.selectedPatientId];
+  }
+  if (Array.isArray(launchData?.subjects)) {
+    const subjectIds = launchData.subjects
+      .map((subject) => subject?.id || subject?.patientname)
+      .filter(Boolean);
+    if (subjectIds.length > 0) return subjectIds;
+  }
+  if (Array.isArray(launchData?.patientname)) {
+    return launchData.patientname.filter(Boolean);
+  }
+  return launchData?.patientname ? [launchData.patientname] : [];
+};
 
+function PatientDatabase({ directoryPath, leadDBS }: PatientDatabaseProps) {
   // Context and navigation
   const { patients, setPatients } = useContext(PatientContext);
   const navigate = useNavigate();
@@ -65,6 +85,9 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
   const [order, setOrder] = useState<'asc' | 'desc'>('asc');
   const [orderBy, setOrderBy] = useState<string>('id');
   const [editMode, setEditMode] = useState<boolean>(false);
+  const [patientListLoaded, setPatientListLoaded] = useState(false);
+  const [launchWarning, setLaunchWarning] = useState('');
+  const launchHandledRef = useRef(false);
   // const [columns, setColumns] = useState(() => {
   //   if (patients.length > 0) {
   //     return Object.keys(patients[0])
@@ -98,7 +121,15 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
 
       setColumns(updatedColumns);
       // setVisibleColumns(new Set(['elmodel', 'Age' || 'age', 'Sex' || 'sex', 'Condition' || 'diagnosis'])); // Initialize only specific columns as visible
-      setVisibleColumns(new Set(['City', 'Netstim / CBCT Publications', 'Condition', 'Target', 'elmodel']));
+      setVisibleColumns(
+        new Set([
+          'City',
+          'Netstim / CBCT Publications',
+          'Condition',
+          'Target',
+          'elmodel',
+        ]),
+      );
     }
   }, [patients]);
 
@@ -117,7 +148,11 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
   const [newColumnId, setNewColumnId] = useState('');
   const [newColumnLabel, setNewColumnLabel] = useState('');
   const [columnToDelete, setColumnToDelete] = useState('');
-  const [selectedPatients, setSelectedPatients] = useState(new Set());
+  const [selectedPatients, setSelectedPatients] = useState<Set<string>>(
+    new Set(),
+  );
+  const [leadGroupExportOpen, setLeadGroupExportOpen] = useState(false);
+  const [leadGroupExportSuccess, setLeadGroupExportSuccess] = useState('');
 
   const fileInputRef = useRef(null);
 
@@ -191,7 +226,9 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
   // };
 
   const countNonEmptyFields = (patient) => {
-    return Object.values(patient).filter((value) => value !== null && value !== '').length;
+    return Object.values(patient).filter(
+      (value) => value !== null && value !== '',
+    ).length;
   };
 
   // Sort patients based on the column and order
@@ -244,20 +281,43 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
     }
   };
 
+  const sortedPatients = sortPatients(patients, getComparator(order, orderBy));
+
   // Filter patients based on the search term
-  const filteredPatients = sortPatients(
-    patients.filter((patient) =>
-      Object.values(patient).some(
-        (value) =>
-          value &&
-          value
-            .toString()
-            .toLowerCase()
-            .includes(searchTerm.toString().toLowerCase()),
-      ),
+  const filteredPatients = sortedPatients.filter((patient) =>
+    Object.values(patient).some(
+      (value) =>
+        value &&
+        value
+          .toString()
+          .toLowerCase()
+          .includes(searchTerm.toString().toLowerCase()),
     ),
-    getComparator(order, orderBy),
   );
+  const selectedPatientRows = sortedPatients.filter((patient) =>
+    selectedPatients.has(patient.id),
+  );
+  const filteredSelectedCount = filteredPatients.filter((patient) =>
+    selectedPatients.has(patient.id),
+  ).length;
+  const leadGroupExportDisabled =
+    !leadDBS || selectedPatientRows.length === 0 || !directoryPath;
+  let leadGroupExportTooltip =
+    'Create a Lead-Group analysis from the selected patients.';
+  if (!leadDBS) {
+    leadGroupExportTooltip =
+      'Lead-Group export requires a Lead-DBS dataset with reconstructed patient folders.';
+  } else if (selectedPatientRows.length === 0) {
+    leadGroupExportTooltip = 'Select at least one patient to export.';
+  } else if (!directoryPath) {
+    leadGroupExportTooltip = 'Choose a Lead-DBS dataset before exporting.';
+  }
+
+  useEffect(() => {
+    if (!leadDBS && leadGroupExportOpen) {
+      setLeadGroupExportOpen(false);
+    }
+  }, [leadDBS, leadGroupExportOpen]);
 
   const [currentPatient, setCurrentPatient] = useState({
     id: '',
@@ -270,101 +330,105 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
   const [isEditing, setIsEditing] = useState(false);
 
   useEffect(() => {
-    window.electron.ipcRenderer.on(
+    const unsubscribeSuccess = window.electron.ipcRenderer.on(
       'file-read-success',
-      (patientsData, directoryPath) => {
+      (patientsData) => {
         console.log(patientsData);
-        setPatients(patientsData); // Set the patients from the JSON file
-        // savePatientsToJson(patientsData, directoryPath);
+        setPatients(Array.isArray(patientsData) ? patientsData : []);
+        setSelectedPatients(new Set());
+        setLeadGroupExportSuccess('');
+        setPatientListLoaded(true);
       },
     );
 
-    window.electron.ipcRenderer.on('file-not-found', () => {
-      console.log(
-        'No dataset_description.json found in the selected directory',
-      );
-    });
+    const unsubscribeNotFound = window.electron.ipcRenderer.on(
+      'file-not-found',
+      () => {
+        console.log(
+          'No dataset_description.json found in the selected directory',
+        );
+      },
+    );
 
-    window.electron.ipcRenderer.on('file-read-error', (error) => {
-      console.error(error);
-    });
+    const unsubscribeError = window.electron.ipcRenderer.on(
+      'file-read-error',
+      (error) => {
+        console.error(error);
+        setPatientListLoaded(true);
+        setLaunchWarning(String(error));
+      },
+    );
+
+    return () => {
+      unsubscribeSuccess();
+      unsubscribeNotFound();
+      unsubscribeError();
+    };
   }, [setPatients]);
 
   useEffect(() => {
-    // console.log(window.electron.ipcRenderer);
-    console.log('Patients: ', patients);
-    console.log('Patients Length: ', patients.length);
-    if (patients.length > 0) {
-      window.electron.ipcRenderer.once('import-inputdata-file', (arg) => {
-        console.log('Received: ', arg);
-        try {
-          console.log('Received: ', arg);
-          if (arg.mode === 'stimulate') {
-            console.log('LeadDBS Patients: ', patients);
+    if (!directoryPath || !patientListLoaded || launchHandledRef.current)
+      return;
 
-            // navigate('/programmer');
-            console.log('stimulate');
-            if (arg.type === 'leaddbs') {
-              let outputPatient = {};
-              let outputTimeline = '';
-              console.log(arg.patientname[0]);
-              Object.keys(patients).forEach((patient) => {
-                if (patients[patient].id === arg.patientname) {
-                  outputPatient = patients[patient];
-                  outputTimeline = arg.labels ? arg.labels[0] : arg.label;
-                  const leadDBS = true;
-                  navigate('/programmer', {
-                    state: {
-                      patient: outputPatient,
-                      timeline: outputTimeline,
-                      directoryPath,
-                      leadDBS,
-                    },
-                  });
-                }
-              });
-            } else if (arg.type === 'leadgroup') {
-              const leadDBS = true;
-              console.log('patients: ', patients);
-              const firstKey = Object.keys(patients)[0]; // Get the first key
-              const firstPatient = patients[firstKey]; // Access the first valu
-              navigate('/programmer', {
-                state: {
-                  patient: firstPatient,
-                  timeline: arg.patientname[0],
-                  directoryPath,
-                  leadDBS,
-                },
-              });
-            } else if (arg.type === 'seeg') {
-              let outputPatient = {};
-              let outputTimeline = '';
-              console.log(arg.patientname[0]);
-              Object.keys(patients).forEach((patient) => {
-                if (patients[patient].id === arg.patientname) {
-                  outputPatient = patients[patient];
-                  outputTimeline = arg.labels ? arg.labels[0] : arg.label;
-                  const leadDBS = true;
-                  navigate('/seeg', {
-                    state: {
-                      patient: outputPatient,
-                      timeline: outputTimeline,
-                      directoryPath,
-                      leadDBS,
-                    },
-                  });
-                }
-              });
-            }
-          }
-        } catch (error) {
-          console.error('Error processing event:', error);
+    let active = true;
+    const openLaunchRequest = async () => {
+      try {
+        const arg = await window.electron.ipcRenderer.invoke('get-launch-data');
+        if (!active || arg?.mode !== 'stimulate') {
+          launchHandledRef.current = true;
+          return;
         }
-      });
-    } else {
-      console.error('ipcRenderer is not available');
-    }
-  }, [patients]);
+
+        const requestedPatientIds = getRequestedPatientIds(arg);
+
+        if (requestedPatientIds.length === 0) {
+          launchHandledRef.current = true;
+          setLaunchWarning(
+            'No patients were selected in Lead-DBS. Select at least one patient and open SPARK again.',
+          );
+          return;
+        }
+
+        const requestedPatient = patients.find(
+          (candidate) => candidate.id === requestedPatientIds[0],
+        );
+        if (!requestedPatient) {
+          launchHandledRef.current = true;
+          setLaunchWarning(
+            `Patient ${requestedPatientIds[0]} could not be found in this dataset.`,
+          );
+          return;
+        }
+
+        const outputTimeline =
+          arg.type === 'leadgroup' || arg.scope === 'group'
+            ? requestedPatientIds[0]
+            : arg.labels?.[0] || arg.label;
+        const route = arg.type === 'seeg' ? '/seeg' : '/programmer';
+        launchHandledRef.current = true;
+        navigate(route, {
+          state: {
+            patient: requestedPatient,
+            timeline: outputTimeline,
+            directoryPath,
+            leadDBS: true,
+          },
+        });
+      } catch (error) {
+        if (active) {
+          launchHandledRef.current = true;
+          setLaunchWarning(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+    };
+
+    openLaunchRequest();
+    return () => {
+      active = false;
+    };
+  }, [directoryPath, navigate, patientListLoaded, patients]);
 
   // Handle input changes in the form
   const handleInputChange = (e) => {
@@ -442,12 +506,14 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
   };
 
   const handleSelectAllClick = (event) => {
-    if (event.target.checked) {
-      const newSelected = new Set(filteredPatients.map((p) => p.id));
-      setSelectedPatients(newSelected);
-    } else {
-      setSelectedPatients(new Set());
-    }
+    setSelectedPatients((current) => {
+      const next = new Set(current);
+      filteredPatients.forEach(({ id }) => {
+        if (event.target.checked) next.add(id);
+        else next.delete(id);
+      });
+      return next;
+    });
   };
 
   const handleCreateMiniset = () => {
@@ -486,6 +552,20 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
       </Typography>
 
       <Container style={{ display: 'flex', flexDirection: 'column' }}>
+        {launchWarning && (
+          <Alert severity="warning" onClose={() => setLaunchWarning('')}>
+            {launchWarning}
+          </Alert>
+        )}
+        {leadGroupExportSuccess && (
+          <Alert
+            severity="success"
+            onClose={() => setLeadGroupExportSuccess('')}
+            sx={{ overflowWrap: 'anywhere' }}
+          >
+            Lead-Group export saved to {leadGroupExportSuccess}
+          </Alert>
+        )}
         <div
           style={{
             display: 'flex',
@@ -622,6 +702,20 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
               >
                 Create Miniset
               </Button>
+              <Tooltip title={leadGroupExportTooltip} arrow describeChild>
+                <span style={{ display: 'inline-flex', marginLeft: '5px' }}>
+                  <Button
+                    onClick={() => {
+                      if (!leadDBS) return;
+                      setLeadGroupExportSuccess('');
+                      setLeadGroupExportOpen(true);
+                    }}
+                    disabled={leadGroupExportDisabled}
+                  >
+                    Export to Lead-Group…
+                  </Button>
+                </span>
+              </Tooltip>
               <Button
                 // variant="contained"
                 // color="default"
@@ -672,12 +766,12 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
                 <TableCell padding="checkbox">
                   <Checkbox
                     indeterminate={
-                      selectedPatients.size > 0 &&
-                      selectedPatients.size < filteredPatients.length
+                      filteredSelectedCount > 0 &&
+                      filteredSelectedCount < filteredPatients.length
                     }
                     checked={
                       filteredPatients.length > 0 &&
-                      selectedPatients.size === filteredPatients.length
+                      filteredSelectedCount === filteredPatients.length
                     }
                     onChange={handleSelectAllClick}
                   />
@@ -822,6 +916,14 @@ function PatientDatabase({ directoryPath }: PatientDatabaseProps) {
         )} */}
         {/* <Button onClick={() => handleCreateMiniset()}>Create Miniset</Button> */}
       </div>
+      <ExportToLeadGroupDialog
+        open={leadDBS && leadGroupExportOpen}
+        directoryPath={directoryPath}
+        leadDBS={leadDBS}
+        patients={selectedPatientRows}
+        onClose={() => setLeadGroupExportOpen(false)}
+        onExportSuccess={setLeadGroupExportSuccess}
+      />
     </div>
   );
 }

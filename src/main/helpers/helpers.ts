@@ -39,20 +39,48 @@ function getPatientFolder(
   console.log('Patient ID: ', patientId);
   // Check for leadgroup type
   const isLeadGroup =
-    stimulationData.type === 'leadgroup' || stimulationData.filepath.includes('leadgroup');
+    stimulationData.type === 'leadgroup' ||
+    stimulationData.scope === 'group' ||
+    (typeof stimulationData.filepath === 'string' &&
+      stimulationData.filepath.includes('leadgroup'));
 
   // Helper: Build folder path for leadgroup
   const getLeadGroupFolder = (): string => {
-    const patientIndex = stimulationData.patientname.findIndex(
+    const patientNames = Array.isArray(stimulationData.patientname)
+      ? stimulationData.patientname
+      : stimulationData.patientname
+        ? [stimulationData.patientname]
+        : [];
+    const patientIndex = patientNames.findIndex(
       (name: string) => name === patientId,
     );
+    const subject = Array.isArray(stimulationData.subjects)
+      ? stimulationData.subjects.find(
+          (candidate: any) =>
+            (candidate?.id || candidate?.patientname) === patientId,
+        )
+      : null;
+    const subjectFolder = subject?.folder || subject?.patientFolder;
+    if (subjectFolder) {
+      return path.basename(subjectFolder) === 'clinical'
+        ? subjectFolder
+        : path.join(subjectFolder, 'clinical');
+    }
     if (patientIndex === -1) {
       throw new Error(`Patient ID "${patientId}" not found in stimulation data.`);
     }
     console.log('Patient Index:', patientIndex);
-    const newFolderPath = stimulationData.patientfolders[0][patientIndex];
+    const patientFolders = Array.isArray(stimulationData.patientfolders?.[0])
+      ? stimulationData.patientfolders[0]
+      : stimulationData.patientfolders;
+    const newFolderPath = patientFolders?.[patientIndex];
+    if (!newFolderPath) {
+      throw new Error(`Folder for patient "${patientId}" was not provided.`);
+    }
     console.log('Patient Folder Path:', newFolderPath);
-    return path.join(newFolderPath, 'clinical');
+    return path.basename(newFolderPath) === 'clinical'
+      ? newFolderPath
+      : path.join(newFolderPath, 'clinical');
   };
 
   // Determine patient folder
@@ -134,16 +162,41 @@ function getPatientFolderPly(directoryPath: string, patientId: string, leadDBS: 
   }
   if (
     stimulationData.type === 'leadgroup' ||
-    stimulationData.filepath.includes('leadgroup')
+    stimulationData.scope === 'group' ||
+    (typeof stimulationData.filepath === 'string' &&
+      stimulationData.filepath.includes('leadgroup'))
   ) {
+    const subject = Array.isArray(stimulationData.subjects)
+      ? stimulationData.subjects.find(
+          (candidate: any) =>
+            (candidate?.id || candidate?.patientname) === patientId,
+        )
+      : null;
+    const subjectFolder = subject?.folder || subject?.patientFolder;
+    if (subjectFolder) {
+      return path.basename(subjectFolder) === 'clinical'
+        ? path.dirname(subjectFolder)
+        : subjectFolder;
+    }
     // Ensure patientname is an array
-    const patientIndex = stimulationData.patientname.findIndex(
+    const patientNames = Array.isArray(stimulationData.patientname)
+      ? stimulationData.patientname
+      : stimulationData.patientname
+        ? [stimulationData.patientname]
+        : [];
+    const patientIndex = patientNames.findIndex(
       (name: string) => name === patientId,
     );
     console.log('Patient Index: ', patientIndex);
     // Check if patientIndex is valid
-    console.log(stimulationData.patientfolders[0][patientIndex]);
-    newFolderPath = stimulationData.patientfolders[0][patientIndex];
+    const patientFolders = Array.isArray(stimulationData.patientfolders?.[0])
+      ? stimulationData.patientfolders[0]
+      : stimulationData.patientfolders;
+    console.log(patientFolders?.[patientIndex]);
+    newFolderPath = patientFolders?.[patientIndex];
+    if (!newFolderPath) {
+      throw new Error(`Folder for patient "${patientId}" was not provided.`);
+    }
     outputFolderPath = newFolderPath;
   } else if (stimulationData.type === 'leaddbs') {
     outputFolderPath = path.join(

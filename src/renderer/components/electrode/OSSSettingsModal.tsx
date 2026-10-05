@@ -6,8 +6,22 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Modal, Form, Button, ButtonGroup, ToggleButton, Nav } from 'react-bootstrap';
-import { OSSSettings, defaultOSSSettings, validateOSSSettings } from '../../utils/OSSSettings';
+import {
+  Modal,
+  Form,
+  Button,
+  ButtonGroup,
+  ToggleButton,
+  Nav,
+} from 'react-bootstrap';
+import {
+  OSSSettings,
+  OSS_AXON_DIAMETERS,
+  OSS_CABLE_MODELS,
+  OSS_PULSE_TYPES,
+  defaultOSSSettings,
+  validateOSSSettings,
+} from '../../utils/OSSSettings';
 
 interface OSSSettingsModalProps {
   show: boolean;
@@ -18,13 +32,18 @@ interface OSSSettingsModalProps {
 
 type TabKey = 'stimulation' | 'pathway';
 
-function OSSSettingsModal({ show, onHide, settings, onSave }: OSSSettingsModalProps) {
+function OSSSettingsModal({
+  show,
+  onHide,
+  settings,
+  onSave,
+}: OSSSettingsModalProps) {
   const [localSettings, setLocalSettings] = useState<OSSSettings>(settings);
   const [activeTab, setActiveTab] = useState<TabKey>('stimulation');
 
   useEffect(() => {
-    setLocalSettings(settings);
-  }, [settings]);
+    if (show) setLocalSettings(settings);
+  }, [settings, show]);
 
   const handleSave = () => {
     if (validateOSSSettings(localSettings)) {
@@ -41,10 +60,20 @@ function OSSSettingsModal({ show, onHide, settings, onSave }: OSSSettingsModalPr
 
   const updateSetting = <K extends keyof OSSSettings>(
     key: K,
-    value: OSSSettings[K]
+    value: OSSSettings[K],
   ) => {
     setLocalSettings((prev) => ({ ...prev, [key]: value }));
   };
+
+  const connectomeOptions = Array.from(
+    new Set(
+      [
+        ...(localSettings.connectomeOptions || []),
+        localSettings.connectomeType,
+        defaultOSSSettings.connectomeType,
+      ].filter(Boolean),
+    ),
+  );
 
   return (
     <Modal show={show} onHide={onHide} size="xl" centered>
@@ -158,18 +187,9 @@ function OSSSettingsModal({ show, onHide, settings, onSave }: OSSSettingsModalPr
                         border: '1px solid #ccc',
                       }}
                     />
-                    <Form.Select
-                      value={localSettings.eThresholdUnit}
-                      onChange={(e) => updateSetting('eThresholdUnit', e.target.value)}
-                      style={{
-                        width: '120px',
-                        borderRadius: '6px',
-                        border: '1px solid #ccc',
-                      }}
-                    >
-                      <option value="V/m">V/m</option>
-                      <option value="mV/m">mV/m</option>
-                    </Form.Select>
+                    <span style={{ fontWeight: '500', color: '#000000' }}>
+                      V/m
+                    </span>
                   </div>
                 </Form.Group>
 
@@ -378,10 +398,11 @@ function OSSSettingsModal({ show, onHide, settings, onSave }: OSSSettingsModalPr
                       border: '1px solid #ccc',
                     }}
                   >
-                    <option value="Multi-Tract: Sahin_C...">
-                      Multi-Tract: Sahin_C...
-                    </option>
-                    <option value="Single-Tract">Single-Tract</option>
+                    {connectomeOptions.map((connectome) => (
+                      <option key={connectome} value={connectome}>
+                        {connectome}
+                      </option>
+                    ))}
                   </Form.Select>
                 </Form.Group>
 
@@ -391,15 +412,22 @@ function OSSSettingsModal({ show, onHide, settings, onSave }: OSSSettingsModalPr
                   </Form.Label>
                   <Form.Select
                     value={localSettings.cableModel}
-                    onChange={(e) => updateSetting('cableModel', e.target.value)}
+                    onChange={(e) =>
+                      updateSetting(
+                        'cableModel',
+                        e.target.value as OSSSettings['cableModel'],
+                      )
+                    }
                     style={{
                       borderRadius: '6px',
                       border: '1px solid #ccc',
                     }}
                   >
-                    <option value="McNeal1976">McNeal1976</option>
-                    <option value="Rattay1999">Rattay1999</option>
-                    <option value="McIntyre2002">McIntyre2002</option>
+                    {OSS_CABLE_MODELS.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
                   </Form.Select>
                 </Form.Group>
 
@@ -419,11 +447,11 @@ function OSSSettingsModal({ show, onHide, settings, onSave }: OSSSettingsModalPr
                         border: '1px solid #ccc',
                       }}
                     >
-                      <option value="1.0">1.0</option>
-                      <option value="2.0">2.0</option>
-                      <option value="3.0">3.0</option>
-                      <option value="4.0">4.0</option>
-                      <option value="5.0">5.0</option>
+                      {OSS_AXON_DIAMETERS.map((diameter) => (
+                        <option key={diameter} value={diameter}>
+                          {diameter.toFixed(1)}
+                        </option>
+                      ))}
                     </Form.Select>
                     <span style={{ fontWeight: '500', color: '#000000' }}>
                       {localSettings.axonDiameterUnit}
@@ -431,9 +459,11 @@ function OSSSettingsModal({ show, onHide, settings, onSave }: OSSSettingsModalPr
                     <Button
                       variant="outline-secondary"
                       size="sm"
+                      disabled
+                      title="Only OSS-DBS supported diameters can be selected."
                       style={{ borderRadius: '6px', color: '#000000' }}
                     >
-                      Custom
+                      Custom unavailable
                     </Button>
                   </div>
                 </Form.Group>
@@ -462,9 +492,11 @@ function OSSSettingsModal({ show, onHide, settings, onSave }: OSSSettingsModalPr
                     <Button
                       variant="outline-secondary"
                       size="sm"
+                      disabled
+                      title="pPAM configuration is not available in Programmer yet."
                       style={{ borderRadius: '6px', color: '#000000' }}
                     >
-                      pPAM
+                      pPAM unavailable
                     </Button>
                   </div>
                 </Form.Group>
@@ -475,15 +507,22 @@ function OSSSettingsModal({ show, onHide, settings, onSave }: OSSSettingsModalPr
                   </Form.Label>
                   <Form.Select
                     value={localSettings.pulseType}
-                    onChange={(e) => updateSetting('pulseType', e.target.value)}
+                    onChange={(e) =>
+                      updateSetting(
+                        'pulseType',
+                        e.target.value as OSSSettings['pulseType'],
+                      )
+                    }
                     style={{
                       borderRadius: '6px',
                       border: '1px solid #ccc',
                     }}
                   >
-                    <option value="Train">Train</option>
-                    <option value="Single">Single</option>
-                    <option value="Biphasic">Biphasic</option>
+                    {OSS_PULSE_TYPES.map((pulseType) => (
+                      <option key={pulseType} value={pulseType}>
+                        {pulseType}
+                      </option>
+                    ))}
                   </Form.Select>
                 </Form.Group>
 
@@ -604,7 +643,7 @@ function OSSSettingsModal({ show, onHide, settings, onSave }: OSSSettingsModalPr
             color: '#ffffff',
           }}
         >
-          Save Settings
+          Save Settings and Close
         </Button>
       </Modal.Footer>
     </Modal>

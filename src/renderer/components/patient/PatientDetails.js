@@ -32,7 +32,9 @@ function PatientDetails({ directoryPath, leadDBS }) {
   const [timelines, setTimelines] = useState([]); // Predefined timelines
 
   const [treeData, setTreeData] = useState([]); // Store timelines with clinical and stimulation data
-  const [selectedItems, setSelectedItems] = useState([]);
+  const [selectedItems, setSelectedItems] = useState(null);
+  const [sessionStatus, setSessionStatus] = useState('');
+  const [deletingSession, setDeletingSession] = useState(false);
 
   // useEffect(() => {
   //   // Request timelines from main process
@@ -99,7 +101,7 @@ function PatientDetails({ directoryPath, leadDBS }) {
           console.error('Error fetching timelines:', error);
         });
     }
-  }, [directoryPath, patient, navigate]);
+  }, [directoryPath, patient, navigate, leadDBS]);
 
   const handleNodeClick = (event, node) => {
     if (node?.action) {
@@ -108,18 +110,19 @@ function PatientDetails({ directoryPath, leadDBS }) {
   };
 
   const addChildToTimeline = (timelineLabel, newChild) => {
-    const updatedTreeData = treeData.map((node) => {
-      if (node.label === timelineLabel) {
-        // If the timeline matches, append the new child to the existing children
+    setTreeData((currentTreeData) =>
+      currentTreeData.map((node) => {
+        if (node.label !== timelineLabel) return node;
+
+        const children = node.children || [];
+        if (children.some((child) => child.id === newChild.id)) return node;
+
         return {
           ...node,
-          children: [...(node.children || []), newChild], // Safely add to children array
+          children: [...children, newChild],
         };
-      }
-      return node;
-    });
-
-    setTreeData(updatedTreeData); // Update the state with the modified tree
+      }),
+    );
   };
 
   const handleAddClinicalScores = (timelineLabel) => {
@@ -132,7 +135,8 @@ function PatientDetails({ directoryPath, leadDBS }) {
           state: { patient, timeline: timelineLabel, directoryPath, leadDBS },
         }),
     };
-    addChildToTimeline(timelineLabel, newChild); // Add the Clinical Scores child to the specified timeline
+    addChildToTimeline(timelineLabel, newChild);
+    newChild.action();
   };
 
   // const handleGroupStats = () => {
@@ -162,16 +166,68 @@ function PatientDetails({ directoryPath, leadDBS }) {
           state: { patient, timeline: timelineLabel, directoryPath, leadDBS },
         }),
     };
-    addChildToTimeline(timelineLabel, newChild); // Add the Clinical Scores child to the specified timeline
+    addChildToTimeline(timelineLabel, newChild);
+    newChild.action();
   };
 
   const handleAddNewTimelineToTree = (timelineLabel) => {
-    const newNode = {
-      id: `${timelineLabel}-${treeData.length}`,
-      label: timelineLabel,
-      children: [],
-    };
-    setTreeData([...treeData, newNode]);
+    setTreeData((currentTreeData) => {
+      if (currentTreeData.some((node) => node.label === timelineLabel)) {
+        return currentTreeData;
+      }
+
+      return [
+        ...currentTreeData,
+        {
+          id: `timeline-${timelineLabel}`,
+          label: timelineLabel,
+          children: [],
+        },
+      ];
+    });
+  };
+
+  const handleDeleteTimeline = async (timelineLabel) => {
+    if (!timelineLabel || deletingSession) return;
+
+    const shouldDelete = window.confirm(
+      `Erase the clinical scores and stimulation parameters for "${timelineLabel}"? This cannot be undone.`,
+    );
+    if (!shouldDelete) return;
+
+    setDeletingSession(true);
+    setSessionStatus('Erasing session…');
+    try {
+      const result = await window.electron.ipcRenderer.invoke(
+        'delete-session',
+        directoryPath,
+        patient.id,
+        timelineLabel,
+        leadDBS,
+      );
+      if (!result?.success) {
+        throw new Error(result.error || 'The session could not be erased.');
+      }
+
+      setTreeData((currentTreeData) =>
+        currentTreeData.filter((node) => node.label !== timelineLabel),
+      );
+      setTimelines((currentTimelines) =>
+        currentTimelines.filter((item) => item !== timelineLabel),
+      );
+      setSelectedItems(null);
+      setTimeline('');
+      setSessionStatus(`Session data for "${timelineLabel}" was erased.`);
+    } catch (error) {
+      console.error('Error erasing session:', error);
+      setSessionStatus(
+        error instanceof Error
+          ? error.message
+          : 'The session could not be erased.',
+      );
+    } finally {
+      setDeletingSession(false);
+    }
   };
 
   if (!patient) {
@@ -238,14 +294,14 @@ function PatientDetails({ directoryPath, leadDBS }) {
   };
 
   const handleSelectionChange = (event, itemIds) => {
-    setSelectedItems(itemIds);
+    setSelectedItems(itemIds || null);
 
     // Find the selected item in treeData and execute its action if it exists
     const selectedItem = findItemById(treeData, itemIds);
     if (
-      selectedItem.label &&
-      (selectedItem.label !== 'Clinical Scores' ||
-        selectedItem.label !== 'Stimulation Parameters')
+      selectedItem?.label &&
+      selectedItem.label !== 'Clinical Scores' &&
+      selectedItem.label !== 'Stimulation Parameters'
     ) {
       setTimeline(selectedItem.label);
     }
@@ -255,7 +311,13 @@ function PatientDetails({ directoryPath, leadDBS }) {
     }
   };
 
-  const [niiVue, setNiiVue] = useState(false);
+  const timelineHasChild = (childId) =>
+    treeData
+      .find((node) => node.label === timeline)
+      ?.children?.some((child) => child.id === childId) || false;
+
+  const hasStimulation = timelineHasChild(`${timeline}-stim`);
+  const hasClinicalScores = timelineHasChild(`${timeline}-clinical`);
 
   return (
     <div className="patient-details">
@@ -338,8 +400,25 @@ function PatientDetails({ directoryPath, leadDBS }) {
               marginRight: '10px',
             }}
           >
-            Add Stimulation Parameters
+            {hasStimulation
+              ? 'Open Stimulation Parameters'
+              : 'Add Stimulation Parameters'}
           </Button>
+        )}
+        {timeline && (
+          <Button
+            variant="outline-danger"
+            disabled={deletingSession}
+            onClick={() => handleDeleteTimeline(timeline)}
+            style={{ borderRadius: '20px' }}
+          >
+            {deletingSession ? 'Erasing…' : 'Erase Session'}
+          </Button>
+        )}
+        {sessionStatus && (
+          <p role="status" style={{ marginTop: '12px' }}>
+            {sessionStatus}
+          </p>
         )}
         {timeline && (
           <Button
@@ -354,7 +433,7 @@ function PatientDetails({ directoryPath, leadDBS }) {
               marginRight: '10px',
             }}
           >
-            Add Clinical Scores
+            {hasClinicalScores ? 'Open Clinical Scores' : 'Add Clinical Scores'}
           </Button>
         )}
         {/* <button className="export-button" onClick={() => handleGroupStats()}>

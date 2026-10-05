@@ -8,6 +8,7 @@ import electrodeData from '../assets/data/electrodeModels.json';
 function Import({ leadDBS }) {
   const allPatients = useContext(PatientContext);
   const [timeline, setTimeline] = useState('');
+  const [importStatus, setImportStatus] = useState('');
   const navigate = useNavigate();
 
   const varargout = [
@@ -116,7 +117,10 @@ function Import({ leadDBS }) {
     const electrodeInfo = varargout.find(
       (item) => item.displayName === importedElectrode,
     );
-    return electrodeInfo ? electrodeInfo.value : 'boston_vercise_directed';
+    if (!electrodeInfo) {
+      throw new Error(`Unknown electrode model: ${importedElectrode || 'blank'}`);
+    }
+    return electrodeInfo.value;
   };
 
   const contactMapper = (level, value, etageidx) => {
@@ -343,18 +347,47 @@ function Import({ leadDBS }) {
     return S;
   }
 
-  const parseStimulations = (sheetData) => {
-    const parsedData = sheetData.map((row) => {
-      const patientID = row.PatientID;
-      const S = parseStimulationParameters(row);
-      return { id: patientID, S, timeline: S.label };
+  const parseStimulations = async (sheetData) => {
+    const parsedData = [];
+    const validationErrors = [];
+
+    sheetData.forEach((row, index) => {
+      const spreadsheetRow = index + 2;
+      try {
+        const patientID = String(row.PatientID || '').trim();
+        const label = String(row.Label || '').trim();
+        if (!patientID) throw new Error('PatientID is required');
+        if (!label) throw new Error('Label is required');
+        if (!row.ElectrodeModel_R || !row.ElectrodeModel_L) {
+          throw new Error('Both electrode models are required');
+        }
+
+        const normalizedRow = { ...row, PatientID: patientID, Label: label };
+        const S = parseStimulationParameters(normalizedRow);
+        parsedData.push({ id: patientID, S, timeline: S.label });
+      } catch (error) {
+        validationErrors.push(`Row ${spreadsheetRow}: ${error.message}`);
+      }
     });
-    console.log('Parsed Stimulation Data:', parsedData);
-    // window.electron.ipcRenderer.sendMessage(
-    //   'batch-import-stimulation',
-    //   parsedData,
-    //   leadDBS,
-    // );
+
+    if (validationErrors.length > 0) {
+      throw new Error(validationErrors.join('\n'));
+    }
+    if (parsedData.length === 0) {
+      throw new Error('The stimulation worksheet contains no data rows.');
+    }
+
+    const result = await window.electron.ipcRenderer.invoke(
+      'batch-import-stimulation',
+      parsedData,
+      leadDBS,
+    );
+    if (!result?.success) {
+      throw new Error(result?.error || 'The stimulation import could not be saved.');
+    }
+
+    const savedCount = result.savedCount ?? parsedData.length;
+    setImportStatus(`Imported ${savedCount} stimulation row${savedCount === 1 ? '' : 's'}.`);
   };
   // Clinical Scores
 
@@ -463,20 +496,43 @@ function Import({ leadDBS }) {
     }
 
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const data = new Uint8Array(e.target.result);
-      const workbook = XLSX.read(data, { type: 'array' });
+    setImportStatus('Reading workbook…');
+    reader.onload = async (e) => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const preferredSheet = workbook.SheetNames.includes('Sheet1')
+          ? 'Sheet1'
+          : workbook.SheetNames.find((sheetName, index) => {
+              const sheetInfo = workbook.Workbook?.Sheets?.[index];
+              return !sheetInfo?.Hidden;
+            });
 
-      workbook.SheetNames.forEach((sheetName) => {
-        const sheetData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+        if (!preferredSheet) {
+          throw new Error('No visible input worksheet was found.');
+        }
+
+        const sheetData = XLSX.utils.sheet_to_json(
+          workbook.Sheets[preferredSheet],
+          { defval: '' },
+        );
         if (fileType === 'clinical') {
           handleSubmit(sheetData);
+          setImportStatus(`Imported ${sheetData.length} clinical score row${sheetData.length === 1 ? '' : 's'}.`);
         } else if (fileType === 'demographics') {
           parseDemographics(sheetData);
+          setImportStatus(`Imported ${sheetData.length} demographic row${sheetData.length === 1 ? '' : 's'}.`);
         } else {
-          parseStimulations(sheetData);
+          await parseStimulations(sheetData);
         }
-      });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setImportStatus(`Import failed: ${message}`);
+        alert(`Import failed:\n${message}`);
+      }
+    };
+    reader.onerror = () => {
+      setImportStatus('Import failed: the workbook could not be read.');
     };
     reader.readAsArrayBuffer(uploadedFile);
   };
@@ -712,6 +768,11 @@ function Import({ leadDBS }) {
             />
           </label>
         </div>
+        {importStatus && (
+          <p role="status" aria-live="polite" style={sectionDescriptionStyle}>
+            {importStatus}
+          </p>
+        )}
       </div>
 
       <button style={backButtonStyle} onClick={() => navigate(-1)}>

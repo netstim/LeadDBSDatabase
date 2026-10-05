@@ -3318,7 +3318,7 @@ function Electrode({
               )}
             </div>
           </div>
-          <div
+          {/* <div
             className="steering-distribution-summary"
             role="status"
             aria-live="polite"
@@ -3341,7 +3341,7 @@ function Electrode({
                 </span>
               </>
             )}
-          </div>
+          </div> */}
           <div className="input-controls">
             <div className="input-field">
               <input

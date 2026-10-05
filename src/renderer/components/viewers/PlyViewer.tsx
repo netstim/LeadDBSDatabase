@@ -168,7 +168,7 @@ const stripNiftiExtension = (fileName: string): string =>
   fileName.replace(NIFTI_FILE_PATTERN, '');
 
 const materialHexColor = (material: any): string | null => {
-  if (!material || material.vertexColors || !material.color) return null;
+  if (!material?.color) return null;
   return `#${material.color.getHexString()}`;
 };
 
@@ -215,6 +215,7 @@ function PlyViewer({
   // Raw NIfTI buffers for imported overlays, kept so surfaces can be rebuilt
   // when the smoothing level changes. Keyed by mesh name.
   const niftiSourcesRef = useRef<Record<string, ArrayBuffer>>({});
+  const niftiThresholdsRef = useRef<Record<string, number>>({});
   const overlayColorIndexRef = useRef(0);
   const [surfaceSmoothing, setSurfaceSmoothing] = useState(5);
   const [backgroundColor, setBackgroundColor] = useState('#000000');
@@ -699,6 +700,7 @@ function PlyViewer({
         visible: true,
         opacity: material?.opacity ?? 0.8,
         color: materialHexColor(material),
+        originalColors: Boolean(material?.vertexColors),
       },
     }));
   };
@@ -781,10 +783,6 @@ function PlyViewer({
       if (opacity < 1) {
         mesh.material.side = THREE.DoubleSide;
         mesh.renderOrder = 100; // Render transparent objects after opaque ones
-        // Compute normals to ensure proper lighting on both sides
-        if (mesh.geometry) {
-          mesh.geometry.computeVertexNormals();
-        }
       } else {
         mesh.renderOrder = 0; // Reset render order for opaque objects
       }
@@ -797,13 +795,62 @@ function PlyViewer({
       [meshName]: {
         ...prevProps[meshName],
         color: hexColor,
+        originalColors: false,
       },
     }));
 
     const mesh = meshes.find((m) => m.name === meshName);
     if (mesh?.material?.color) {
+      if (mesh.material.vertexColors) mesh.material.vertexColors = false;
       mesh.material.color.set(hexColor);
       mesh.material.needsUpdate = true;
+    }
+  };
+
+  const handleRestoreVertexColors = (meshName) => {
+    const mesh = meshes.find((candidate) => candidate.name === meshName);
+    if (!mesh?.geometry?.hasAttribute('color') || !mesh.material?.color) return;
+    mesh.material.vertexColors = true;
+    mesh.material.color.set('#ffffff');
+    mesh.material.needsUpdate = true;
+    setMeshProperties((prevProps) => ({
+      ...prevProps,
+      [meshName]: {
+        ...prevProps[meshName],
+        color: '#ffffff',
+        originalColors: true,
+      },
+    }));
+  };
+
+  const handleSurfaceThresholdCommit = (meshName, input) => {
+    const previous = niftiThresholdsRef.current[meshName] ?? 0.5;
+    const value = input.value.trim() === '' ? NaN : Number(input.value);
+    const buffer = niftiSourcesRef.current[meshName];
+    const existing: any = sceneRef.current?.children.find(
+      (child) => child.name === meshName,
+    );
+    if (!Number.isFinite(value) || !buffer || !existing) {
+      input.value = String(previous);
+      return;
+    }
+    if (value === previous) return;
+
+    try {
+      const rebuilt = nii2Mesh(buffer, {
+        isoLevel: value,
+        smoothingIterations: surfaceSmoothing,
+      });
+      existing.geometry?.dispose?.();
+      existing.geometry = rebuilt.geometry;
+      rebuilt.material.dispose();
+      niftiThresholdsRef.current[meshName] = value;
+    } catch (error) {
+      input.value = String(previous);
+      setImportStatus({
+        type: 'error',
+        message: `Could not set ${meshName} threshold: ${error instanceof Error ? error.message : 'unknown error'}`,
+      });
     }
   };
 
@@ -819,6 +866,7 @@ function PlyViewer({
         });
     }
     delete niftiSourcesRef.current[meshName];
+    delete niftiThresholdsRef.current[meshName];
     setMeshes((prevMeshes) =>
       prevMeshes.filter((existing) => existing.name !== meshName),
     );
@@ -4176,6 +4224,23 @@ function PlyViewer({
     addMeshToScene(overlayName, geometry, material);
   };
 
+  const uniqueOverlayName = (fileName) => {
+    const baseName =
+      stripNiftiExtension(fileName).replace(FIBER_FILE_PATTERN, '') ||
+      'Imported overlay';
+    const scene = sceneRef.current;
+    let candidate = baseName;
+    let suffix = 2;
+    while (
+      ELECTRODE_MESH_NAMES.has(candidate) ||
+      scene?.children.some((child) => child.name === candidate)
+    ) {
+      candidate = `${baseName} (${suffix})`;
+      suffix += 1;
+    }
+    return candidate;
+  };
+
   const onDrop = async (acceptedFiles) => {
     const importableFiles = acceptedFiles.filter(
       (file) =>
@@ -4196,10 +4261,7 @@ function PlyViewer({
     // Sequential on purpose: marching cubes is CPU-heavy and parallel imports
     // would just fight over the main thread.
     for (const file of importableFiles) {
-      const overlayName = stripNiftiExtension(file.name).replace(
-        FIBER_FILE_PATTERN,
-        '',
-      );
+      const overlayName = uniqueOverlayName(file.name);
       try {
         // eslint-disable-next-line no-await-in-loop
         const buffer = await file.arrayBuffer();
@@ -4211,14 +4273,16 @@ function PlyViewer({
         imported.push(overlayName);
       } catch (error) {
         console.error(`Failed to import overlay ${file.name}:`, error);
-        failed.push(overlayName);
+        failed.push(
+          `${file.name}: ${error instanceof Error ? error.message : 'unknown error'}`,
+        );
       }
     }
 
     if (failed.length > 0) {
       setImportStatus({
         type: 'error',
-        message: `Could not import: ${failed.join(', ')}. Check that the file is a valid NIfTI volume or fiber .mat file.`,
+        message: `Could not import ${failed.join('; ')}${imported.length > 0 ? `. Added ${imported.join(', ')}.` : ''}`,
       });
     } else {
       setImportStatus({
@@ -4260,12 +4324,14 @@ function PlyViewer({
       const scene = sceneRef.current;
       if (!scene) return;
       sources.forEach(([overlayName, buffer]) => {
+        if (niftiSourcesRef.current[overlayName] !== buffer) return;
         const existing: any = scene.children.find(
           (child) => child.name === overlayName,
         );
         if (!existing) return;
         try {
           const rebuilt = nii2Mesh(buffer, {
+            isoLevel: niftiThresholdsRef.current[overlayName] ?? 0.5,
             smoothingIterations: surfaceSmoothing,
           });
           existing.geometry?.dispose?.();
@@ -4292,11 +4358,38 @@ function PlyViewer({
     const box = new THREE.Box3();
     let hasContent = false;
     scene.children.forEach((child: any) => {
-      if (!child.isMesh || !child.visible) return;
+      if ((!child.isMesh && !child.isLineSegments) || !child.visible) return;
       box.expandByObject(child);
       hasContent = true;
     });
     return hasContent && !box.isEmpty() ? box : null;
+  };
+
+  const fitVisibleScene = () => {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    const box = visibleSceneBounds();
+    if (!camera || !box) return;
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1);
+    const direction = camera.position
+      .clone()
+      .sub(controls?.target ?? center)
+      .normalize();
+    if (direction.lengthSq() === 0) direction.set(0, -1, 1).normalize();
+    camera.position.copy(
+      center.clone().addScaledVector(direction, Math.max(50, radius * 3)),
+    );
+    camera.lookAt(center);
+    camera.far = Math.max(1000, radius * 6);
+    const baseHeight = camera.top - camera.bottom;
+    const baseWidth = camera.right - camera.left;
+    camera.zoom = Math.min(8, (Math.min(baseHeight, baseWidth) * 0.45) / radius);
+    camera.updateProjectionMatrix();
+    if (controls) {
+      controls.target.copy(center);
+      controls.update();
+    }
   };
 
   // Snap the main camera to a standard anatomical viewing direction, framed
@@ -4588,6 +4681,14 @@ function PlyViewer({
               </button>
               <button
                 type="button"
+                title="Fit all visible structures"
+                style={{ ...viewerToolbarButtonStyle, width: '32px' }}
+                onClick={fitVisibleScene}
+              >
+                Fit
+              </button>
+              <button
+                type="button"
                 title="Save screenshot (PNG)"
                 style={viewerToolbarButtonStyle}
                 onClick={captureScreenshot}
@@ -4680,7 +4781,7 @@ function PlyViewer({
                           min={0}
                           max={1}
                           step={0.01}
-                          value={meshProperties[mesh.name]?.opacity || 0.8}
+                          value={meshProperties[mesh.name]?.opacity ?? 0.8}
                           onChange={(e) =>
                             handleOpacityChange(
                               mesh.name,
@@ -4689,11 +4790,42 @@ function PlyViewer({
                           }
                           style={{ width: '150px' }}
                         />
-                        {meshProperties[mesh.name]?.color && (
+                        {niftiSourcesRef.current[mesh.name] && (
+                          <>
+                            <h3 style={{ fontSize: '12px', color: '#333' }}>
+                              Surface threshold
+                            </h3>
+                            <Form.Control
+                              type="number"
+                              step="any"
+                              defaultValue={niftiThresholdsRef.current[mesh.name] ?? 0.5}
+                              aria-label={`${mesh.name} surface threshold`}
+                              onBlur={(event) =>
+                                handleSurfaceThresholdCommit(
+                                  mesh.name,
+                                  event.currentTarget,
+                                )
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.currentTarget.blur();
+                                }
+                              }}
+                              style={{ width: '100px' }}
+                            />
+                          </>
+                        )}
+                        {meshProperties[mesh.name]?.color &&
+                          !ELECTRODE_MESH_NAMES.has(mesh.name) && (
                           <>
                             <h3 style={{ fontSize: '12px', color: '#333' }}>
                               Color
                             </h3>
+                            {meshProperties[mesh.name]?.originalColors && (
+                              <span style={{ fontSize: '11px', color: '#555' }}>
+                                Showing original mesh colors
+                              </span>
+                            )}
                             <Form.Control
                               type="color"
                               value={meshProperties[mesh.name].color}
@@ -4705,6 +4837,17 @@ function PlyViewer({
                               }
                               style={{ width: '60px', padding: '2px' }}
                             />
+                            {mesh.geometry?.hasAttribute('color') &&
+                              !meshProperties[mesh.name]?.originalColors && (
+                                <Button
+                                  variant="outline-secondary"
+                                  size="sm"
+                                  style={{ marginTop: '6px' }}
+                                  onClick={() => handleRestoreVertexColors(mesh.name)}
+                                >
+                                  Restore original colors
+                                </Button>
+                              )}
                           </>
                         )}
                         {!ELECTRODE_MESH_NAMES.has(mesh.name) && (

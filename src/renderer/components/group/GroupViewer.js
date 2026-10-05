@@ -15,14 +15,25 @@ import {
 } from 'react-bootstrap';
 import SettingsIcon from '@mui/icons-material/Settings'; // Material UI settings icon
 import * as math from 'mathjs';
+import {
+  createFallbackElectrodeGeometry,
+  parseElectrodePlyGeometry,
+} from '../../utils/electrodeFallbackGeometry';
 // import BigBrain from '../../assets/images/untitled.jpg';
 // import { remote } from 'electron'; // Use 'electron' for Electron v12+
 
-function GroupViewer({
-  filteredPatients,
-  directoryPath,
-  filters,
-}) {
+const disposeSceneObject = (object) => {
+  object.traverse((child) => {
+    child.geometry?.dispose?.();
+    if (Array.isArray(child.material)) {
+      child.material.forEach((material) => material.dispose());
+    } else {
+      child.material?.dispose?.();
+    }
+  });
+};
+
+function GroupViewer({ filteredPatients, directoryPath, filters }) {
   const [plyFile, setPlyFile] = useState(null);
   const mountRef = useRef(null);
   const secondaryMountRef = useRef(null); // Ref for the secondary view
@@ -47,6 +58,11 @@ function GroupViewer({
   const [niiCoords, setNiiCoords] = useState(null);
   const [plotNiiCoords, setPlotNiiCoords] = useState({});
   const [niiSolution, setNiiSolution] = useState('');
+  const [sceneReady, setSceneReady] = useState(false);
+  const [geometryStatus, setGeometryStatus] = useState({
+    fallback: [],
+    missing: [],
+  });
   // Thresholding/Modification stuff
 
   // Don't forget **********************
@@ -92,7 +108,7 @@ function GroupViewer({
     'Li 2021': '#FFB347', // Apricot
     'Horn 2022': '#B565A7', // Lavender
     'Horn 2017': '#009688', // Teal
-    'Other': '#B0B0B0', // Light Gray
+    Other: '#B0B0B0', // Light Gray
     // Add more publications and colors as needed
   };
 
@@ -113,7 +129,6 @@ function GroupViewer({
   //       // setPlyFile(fileData);
   //       const loader = new PLYLoader();
   //       const geometry = loader.parse(fileData);
-
 
   //       const material = new THREE.MeshStandardMaterial({
   //         vertexColors: geometry.hasAttribute('color'),
@@ -152,7 +167,7 @@ function GroupViewer({
 
         // Access the color attribute
         const colors = geometry.attributes.color.array;
-        const newColors = new Float32Array(colors.length * 4 / 3);
+        const newColors = new Float32Array((colors.length * 4) / 3);
 
         // Iterate over the colors and make reddish tones transparent
         for (let i = 0, j = 0; i < colors.length; i += 3, j += 4) {
@@ -191,7 +206,6 @@ function GroupViewer({
 
     loadPlyFile(); // Call the async function
   }, []);
-
 
   const [meshVisibility, setMeshVisibility] = useState({});
   const [meshOpacity, setMeshOpacity] = useState({});
@@ -310,6 +324,16 @@ function GroupViewer({
 
   const addMeshToScene = (name, geometry, material, position) => {
     const scene = sceneRef.current;
+    if (!scene) {
+      geometry?.dispose?.();
+      material?.dispose?.();
+      return;
+    }
+    const existing = scene.getObjectByName(name);
+    if (existing) {
+      scene.remove(existing);
+      disposeSceneObject(existing);
+    }
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = name; // Assign the name for reference
     if (position) {
@@ -318,7 +342,10 @@ function GroupViewer({
     }
     scene.add(mesh);
 
-    setMeshes((prevMeshes) => [...prevMeshes, mesh]); // Add mesh to state
+    setMeshes((prevMeshes) => [
+      ...prevMeshes.filter((existingMesh) => existingMesh.name !== name),
+      mesh,
+    ]); // Add mesh to state
     setMeshProperties((prevProps) => ({
       ...prevProps,
       [name]: { visible: true, opacity: 0.8 },
@@ -458,13 +485,15 @@ function GroupViewer({
   const getColor = (patient) => {
     const filter = 'Netstim / CBCT Publications';
     let color = publicationColors['Other'];
-    const publication = patient[filter] ? patient[filter].split(',').map(p => p.trim()) : null;
+    const publication = patient[filter]
+      ? patient[filter].split(',').map((p) => p.trim())
+      : null;
     if (filters[filter] && filters[filter].length > 0) {
       console.log('Publication: ', publication);
       const selectedPublication = filters[filter];
       if (publication && publication.includes(selectedPublication)) {
         color = publicationColors[selectedPublication];
-      } else if (publication.length >= 1) {
+      } else if (publication && publication.length >= 1) {
         color = publicationColors[publication[0]];
       }
     } else if (publication) {
@@ -479,62 +508,47 @@ function GroupViewer({
     return color;
   };
 
-  const handlePriorStimChange = async (outputPatientID, color) => {
-    const electrodeLoader = new PLYLoader();
-
+  const handlePriorStimChange = async (
+    outputPatientID,
+    color,
+    isCancelled = () => false,
+  ) => {
     try {
-      // Load and parse the PLY file from Electron's IPC
       const fileData = await window.electron.ipcRenderer.invoke(
         'load-reconstruction',
         outputPatientID,
         directoryPath,
       );
-      const electrodeGeometry = electrodeLoader.parse(
-        fileData.combinedElectrodesPly,
-      );
-
-      const colors = electrodeGeometry.attributes.color.array; // Access the existing color array
-
-      // Create a new colors array
-      const newColors = new Float32Array(colors.length);
-
-      // Define the RGB values for light grey
-      const lightGrey = [0.7, 0.7, 0.75]; // Slightly bluish-grey for a more metallic look
-      // Iterate over the colors array and replace yellow-like colors with light grey
-      for (let i = 0; i < colors.length; i += 3) {
-        const r = colors[i];
-        const g = colors[i + 1];
-        const b = colors[i + 2];
-
-        // Check if the color is close to yellow, lime green, magenta, or cyan
-        if (
-          (r > 0.9 && g > 0.9 && b < 0.6) || // Yellow-like
-          (r > 0.4 && r < 0.6 && g > 0.9 && b < 0.1) || // Lime green-like
-          (r > 0.9 && g < 0.1 && b > 0.4 && b < 0.6) || // Magenta-like
-          (r < 0.1 && g > 0.4 && g < 0.6 && b > 0.9) || // Cyan-like
-          (r < 0.1 && g < 0.1 && b > 0.4 && b < 0.6) || // Blue-like
-          (r < 0.1 && g < 0.1 && b > 0.5 && b < 0.6) ||
-          (b > 0.5 && b > r && b > g) // General blue-like
-        ) {
-          // If the color matches any of the specified colors, change it to light grey
-          newColors[i] = lightGrey[0];
-          newColors[i + 1] = lightGrey[1];
-          newColors[i + 2] = lightGrey[2];
-        } else {
-          // Otherwise, keep the original color
-          newColors[i] = r;
-          newColors[i + 1] = g;
-          newColors[i + 2] = b;
+      let electrodeGeometry = null;
+      let source = 'ply';
+      if (fileData?.combinedElectrodesPly) {
+        try {
+          electrodeGeometry = parseElectrodePlyGeometry(
+            fileData.combinedElectrodesPly,
+          );
+        } catch (error) {
+          console.warn(
+            `Invalid electrode PLY for ${outputPatientID}; using coordinates.`,
+            error,
+          );
         }
       }
-
-      // Update the geometry with the new colors
-      electrodeGeometry.setAttribute('color', new THREE.BufferAttribute(newColors, 3));
-
+      if (!electrodeGeometry) {
+        electrodeGeometry = createFallbackElectrodeGeometry(
+          fileData?.reconstructionData,
+        );
+        source = 'fallback';
+      }
+      if (!electrodeGeometry) return 'empty';
+      if (isCancelled()) {
+        electrodeGeometry.dispose();
+        return 'cancelled';
+      }
 
       // Create a material for the mesh
       const material = new THREE.MeshStandardMaterial({
         vertexColors: electrodeGeometry.hasAttribute('color'),
+        color: electrodeGeometry.hasAttribute('color') ? 0xffffff : color,
         metalness: 0, // High metalness for a metallic look
         roughness: 0.1, // Low roughness for a shiny surface
         transparent: false,
@@ -549,29 +563,58 @@ function GroupViewer({
         electrodeGeometry,
         material,
       );
+      return source;
     } catch (error) {
-      console.error('Error loading PLY file:', error);
+      console.error(`Error loading geometry for ${outputPatientID}:`, error);
+      return 'empty';
     }
   };
 
   useEffect(() => {
-    if (sceneRef.current && mountRef.current) {
-      // Remove all previously rendered patients
-      console.log('Loading electrodes');
-      sceneRef.current.children = sceneRef.current.children.filter(
-        (child) => !child.name.includes('-electrodes')
-      );
-
-      // Render the filtered patients
-      filteredPatients.forEach((patient) => {
-        const color = getColor(patient);
-        if (patient.id === 'sub-CbctDbs0215') {
-          return;
-        }
-        handlePriorStimChange(patient.id, color);
-      });
+    if (!sceneReady || !sceneRef.current || !Array.isArray(filteredPatients)) {
+      return undefined;
     }
-  }, [filteredPatients, sceneRef.current, mountRef.current]);
+    let cancelled = false;
+    const scene = sceneRef.current;
+    scene.children
+      .filter((child) => child.name.endsWith('-electrodes'))
+      .forEach((child) => {
+        scene.remove(child);
+        disposeSceneObject(child);
+      });
+    setMeshes((current) =>
+      current.filter((mesh) => !mesh.name.endsWith('-electrodes')),
+    );
+
+    const loadPatients = async () => {
+      const results = await Promise.all(
+        filteredPatients
+          .filter((patient) => patient?.id)
+          .map(async (patient) => ({
+            id: patient.id,
+            source: await handlePriorStimChange(
+              patient.id,
+              getColor(patient),
+              () => cancelled,
+            ),
+          })),
+      );
+      if (!cancelled) {
+        setGeometryStatus({
+          fallback: results
+            .filter(({ source }) => source === 'fallback')
+            .map(({ id }) => id),
+          missing: results
+            .filter(({ source }) => source === 'empty')
+            .map(({ id }) => id),
+        });
+      }
+    };
+    loadPatients();
+    return () => {
+      cancelled = true;
+    };
+  }, [directoryPath, filteredPatients, sceneReady]);
 
   // useEffect(() => {
   //   if (mountRef.current && secondaryMountRef.current) {
@@ -655,7 +698,6 @@ function GroupViewer({
   //   }
   // }, []);
 
-
   useEffect(() => {
     if (mountRef.current) {
       // Initialize scene, camera, and renderer only once
@@ -721,7 +763,11 @@ function GroupViewer({
       scene.add(pointLight);
 
       // Add a HemisphereLight for a more natural lighting effect
-      const hemisphereLight = new THREE.HemisphereLight(0x4040ff, 0x404040, 0.5); // Blue sky, grey ground
+      const hemisphereLight = new THREE.HemisphereLight(
+        0x4040ff,
+        0x404040,
+        0.5,
+      ); // Blue sky, grey ground
       scene.add(hemisphereLight);
 
       const spotLight = new THREE.SpotLight(0xffffff, 1);
@@ -750,16 +796,15 @@ function GroupViewer({
 
       rendererRef.current = renderer;
       cameraRef.current = camera;
+      setSceneReady(true);
 
+      let animationFrameId = 0;
       const animate = () => {
-        requestAnimationFrame(animate);
+        animationFrameId = requestAnimationFrame(animate);
         controls.update(); // Update OrbitControls
-        renderer.render(sceneRef.current, camera);
+        renderer.render(scene, camera);
       };
       animate();
-
-      // Load the image as a texture
-      const textureLoader = new THREE.TextureLoader();
       // textureLoader.load(BigBrain, (texture) => {
       //   // Create a plane geometry
       //   const aspectRatio = texture.image.width / texture.image.height;
@@ -776,9 +821,19 @@ function GroupViewer({
       // });
 
       return () => {
+        setSceneReady(false);
+        cancelAnimationFrame(animationFrameId);
+        controls.dispose();
+        disposeSceneObject(scene);
+        renderer.domElement.remove();
         renderer.dispose();
+        controlsRef.current = null;
+        rendererRef.current = null;
+        cameraRef.current = null;
+        if (sceneRef.current === scene) sceneRef.current = null;
       };
     }
+    return undefined;
   }, []);
 
   useEffect(() => {
@@ -996,7 +1051,7 @@ function GroupViewer({
 
     const processFilesSequentially = async () => {
       for (const file of fileData) {
-        const {fileName } = file;
+        const { fileName } = file;
         if (fileName !== 'gm_mask.nii.gz') {
           await processFile(file);
         }
@@ -1191,6 +1246,19 @@ function GroupViewer({
         {/* <Button onClick={changeCameraAngle}>View from top</Button> */}
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           <div ref={mountRef} />
+          {geometryStatus.fallback.length > 0 && (
+            <div role="status" style={geometryStatusStyle}>
+              Generic electrode model (PLY unavailable):{' '}
+              {geometryStatus.fallback.join(', ')}
+            </div>
+          )}
+          {geometryStatus.missing.length > 0 && (
+            <div role="alert" style={geometryErrorStyle}>
+              No electrode geometry is available for{' '}
+              {geometryStatus.missing.join(', ')}. Reopen these patients in
+              Lead-DBS to regenerate reconstruction coordinates or PLY exports.
+            </div>
+          )}
           {/* <div ref={secondaryMountRef} /> */}
         </div>
         <Dropdown drop="start">
@@ -1267,6 +1335,22 @@ const viewerContainerStyle = {
   justifyContent: 'space-between',
   height: '100%', // Adjust to fit the full height of the container
   width: '100%',
+};
+
+const geometryStatusStyle = {
+  color: '#334e68',
+  backgroundColor: '#e8f1f8',
+  fontSize: '12px',
+  lineHeight: 1.4,
+  padding: '6px 10px',
+  textAlign: 'center',
+};
+
+const geometryErrorStyle = {
+  ...geometryStatusStyle,
+  color: '#7c2d12',
+  backgroundColor: '#ffedd5',
+  maxWidth: '1200px',
 };
 
 const controlPanelStyle2 = {
