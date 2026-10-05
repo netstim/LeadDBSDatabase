@@ -13,6 +13,11 @@ import {
   Paper,
   Typography,
   Divider,
+  ToggleButton,
+  ToggleButtonGroup,
+  Tab,
+  Tabs,
+  SelectChangeEvent,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import RemoveIcon from '@mui/icons-material/Remove';
@@ -23,9 +28,17 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import path from 'path';
 import {
   createEmptyElectrodeSet,
+  ContactState,
   ElectrodeSet,
   parseElectrodeCSV,
 } from '../utils/seegCsv';
+import {
+  getGridColumns,
+  GridColumn,
+  pasteGridCells,
+  updateGridCell,
+} from '../utils/seegGrid';
+import SEEGGrid from '../components/SEEGGrid';
 
 interface Patient {
   id: string;
@@ -89,6 +102,17 @@ interface ReconstructionData {
 interface SavedElectrodeCSV {
   electrodeName: string;
   CSV: string;
+  variableNames?: string[];
+  metadata?: {
+    amplitude?: string;
+    amplitudeUnit?: string;
+    pulseWidth?: string;
+    variableValues?: Record<string, string>;
+  }[];
+}
+
+interface SEEGProps {
+  directoryPath: string;
 }
 
 // Define styles for the grid and checkbox
@@ -113,7 +137,7 @@ const useStyles = makeStyles({
   },
 });
 
-function SEEG({ directoryPath }) {
+function SEEG({ directoryPath }: SEEGProps) {
   // Extract data from location state
   const navigate = useNavigate();
 
@@ -130,7 +154,6 @@ function SEEG({ directoryPath }) {
         'load_patient_list',
         directoryPath,
       );
-      console.log('Patient List: ', patients);
       setPatientList(patients);
     };
     loadPatients();
@@ -198,7 +221,7 @@ function SEEG({ directoryPath }) {
     }
   }, [electrodeNames, selectedElectrode]);
 
-  const handlePatientIdChange = (event: any) => {
+  const handlePatientIdChange = (event: SelectChangeEvent<string>) => {
     setSelectedPatientId(event.target.value);
   };
 
@@ -225,9 +248,15 @@ function SEEG({ directoryPath }) {
     return data.props[index]?.labels?.[0] || [];
   };
 
-  function TriStateCheckbox({ value, onChange }) {
+  function TriStateCheckbox({
+    value,
+    onChange,
+  }: {
+    value: ContactState;
+    onChange: (value: ContactState) => void;
+  }) {
     // value: "none" | "plus" | "minus"
-    const next = (curr) =>
+    const next = (curr: ContactState): ContactState =>
       curr === "none" ? "plus" :
       curr === "plus" ? "minus" :
       "none";
@@ -261,31 +290,42 @@ function SEEG({ directoryPath }) {
   const [electrodeSets, setElectrodeSets] = useState<
     Record<string, ElectrodeSet[]>
   >({});
+  const [entryMode, setEntryMode] = useState<'cards' | 'grid'>('cards');
 
   // Initialize each electrode from its saved CSV, or use a blank set if no
   // saved stimulation file exists.
   useEffect(() => {
     if (!data?.props) return;
 
+    const savedVariableNames = savedElectrodeCSVs.find(
+      (file) => Array.isArray(file.variableNames),
+    )?.variableNames;
+    setVariableNames(savedVariableNames || ['Variable1', 'Variable2']);
+
     const savedByElectrode = new Map(
-      savedElectrodeCSVs.map((savedFile) => [
-        savedFile.electrodeName,
-        savedFile.CSV,
-      ]),
+      savedElectrodeCSVs.map((savedFile) => [savedFile.electrodeName, savedFile]),
     );
     const initialSets = data.props.reduce((acc, electrode) => {
       const labels = electrode.labels?.[0] || [];
-      const savedCSV = savedByElectrode.get(electrode.elname);
-      acc[electrode.elname] = savedCSV
-        ? parseElectrodeCSV(savedCSV, labels)
+      const savedFile = savedByElectrode.get(electrode.elname);
+      const parsed = savedFile
+        ? parseElectrodeCSV(savedFile.CSV, labels)
         : [createEmptyElectrodeSet()];
+      acc[electrode.elname] = parsed.map((set, index) => ({
+        ...set,
+        amplitude: savedFile?.metadata?.[index]?.amplitude ?? set.amplitude,
+        amplitudeUnit:
+          savedFile?.metadata?.[index]?.amplitudeUnit || set.amplitudeUnit,
+        pulseWidth: savedFile?.metadata?.[index]?.pulseWidth || '',
+        variableValues: savedFile?.metadata?.[index]?.variableValues || {},
+      }));
       return acc;
     }, {} as Record<string, ElectrodeSet[]>);
 
     setElectrodeSets(initialSets);
   }, [data, savedElectrodeCSVs]);
 
-  const handleElectrodeChange = (event) => {
+  const handleElectrodeChange = (event: SelectChangeEvent<string>) => {
     setSelectedElectrode(event.target.value);
   };
 
@@ -306,7 +346,11 @@ function SEEG({ directoryPath }) {
   //   });
   // };
 
-  const handleContactTriStateChange = (setIndex, contact, nextValue) => {
+  const handleContactTriStateChange = (
+    setIndex: number,
+    contact: string,
+    nextValue: ContactState,
+  ) => {
     setElectrodeSets((prev) => {
       const currentSets = prev[selectedElectrode];
       const currentSet = currentSets[setIndex];
@@ -341,7 +385,10 @@ function SEEG({ directoryPath }) {
     });
   };
 
-  const handleAmplitudeChange = (index, event) => {
+  const handleAmplitudeChange = (
+    index: number,
+    event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
+  ) => {
     const value = event.target.value;
     setElectrodeSets((prevSets) => {
       const updatedSet = {
@@ -357,7 +404,10 @@ function SEEG({ directoryPath }) {
     });
   };
 
-  const handlePulseWidthChange = (index, event) => {
+  const handlePulseWidthChange = (
+    index: number,
+    event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
+  ) => {
     const value = event.target.value;
     setElectrodeSets((prevSets) => {
       const updatedSet = {
@@ -373,7 +423,10 @@ function SEEG({ directoryPath }) {
     });
   };
 
-  const handleAmplitudeUnitChange = (index, event) => {
+  const handleAmplitudeUnitChange = (
+    index: number,
+    event: SelectChangeEvent<string>,
+  ) => {
     const value = event.target.value;
     setElectrodeSets((prevSets) => {
       const updatedSet = {
@@ -389,7 +442,11 @@ function SEEG({ directoryPath }) {
     });
   };
 
-  const handleVariableValueChange = (index, varName, event) => {
+  const handleVariableValueChange = (
+    index: number,
+    varName: string,
+    event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
+  ) => {
     const value = event.target.value;
     setElectrodeSets((prevSets) => {
       const updatedVariableValues = {
@@ -409,24 +466,38 @@ function SEEG({ directoryPath }) {
     });
   };
 
-  const addSet = () => {
+  const addSets = (count: number) => {
     setElectrodeSets((prevSets) => ({
       ...prevSets,
       [selectedElectrode]: [
-        ...prevSets[selectedElectrode],
-        {
-          contacts: [],
-          contactStates: {},
-          amplitude: '',
-          amplitudeUnit: 'mA',
-          pulseWidth: '',
-          variableValues: {},
-        },
+        ...(prevSets[selectedElectrode] || []),
+        ...Array.from({ length: count }, createEmptyElectrodeSet),
       ],
     }));
   };
 
-  const removeSet = (index) => {
+  const addSet = () => addSets(1);
+
+  const handleGridCellChange = (row: number, column: GridColumn, value: string) => {
+    setElectrodeSets((prev) => {
+      const sets = [...(prev[selectedElectrode] || [])];
+      if (!sets[row]) return prev;
+      sets[row] = updateGridCell(sets[row], column, value);
+      return { ...prev, [selectedElectrode]: sets };
+    });
+  };
+
+  const handleGridPaste = (row: number, column: number, text: string) => {
+    const columns = getGridColumns(variableNames, contactNames);
+    setElectrodeSets((prev) => ({
+      ...prev,
+      [selectedElectrode]: pasteGridCells(
+        prev[selectedElectrode] || [], columns, row, column, text,
+      ),
+    }));
+  };
+
+  const removeSet = (index: number) => {
     setElectrodeSets((prevSets) => {
       const updatedSets = prevSets[selectedElectrode].filter(
         (_, i) => i !== index,
@@ -443,6 +514,28 @@ function SEEG({ directoryPath }) {
       ...prevNames,
       `Variable${prevNames.length + 1}`,
     ]);
+  };
+
+  const renameVariable = (index: number, nextName: string) => {
+    const previousName = variableNames[index];
+    setVariableNames((names) =>
+      names.map((name, i) => (i === index ? nextName : name)),
+    );
+    if (previousName === nextName) return;
+    setElectrodeSets((previous) => Object.fromEntries(
+      Object.entries(previous).map(([electrode, sets]) => [
+        electrode,
+        sets.map((set) => {
+          const { [previousName]: previousValue, ...otherValues } = set.variableValues;
+          return {
+            ...set,
+            variableValues: previousValue === undefined
+              ? otherValues
+              : { ...otherValues, [nextName]: previousValue },
+          };
+        }),
+      ]),
+    ));
   };
 
   const saveTSV = (coordinateSpace: 'native' | 'scrf' | 'mni' = 'native') => {
@@ -514,6 +607,13 @@ function SEEG({ directoryPath }) {
       return {
         electrodeName: electrode.elname,
         CSV: csvData.map((row) => row.join(',')).join('\n'),
+        metadata: sets.map((set) => ({
+          amplitude: set.amplitude,
+          amplitudeUnit: set.amplitudeUnit,
+          pulseWidth: set.pulseWidth,
+          variableValues: set.variableValues,
+        })),
+        variableNames,
       };
     });
 
@@ -535,14 +635,14 @@ function SEEG({ directoryPath }) {
   const patientIds = patientList.map((patient) => patient.id).filter(Boolean);
 
   return (
-    <Box sx={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
+    <Box sx={{ padding: '24px', maxWidth: entryMode === 'grid' ? 'none' : '1400px', margin: '0 auto' }}>
       {/* Header Section - Patient and Electrode Selection */}
       <Paper className={classes.sectionPaper} elevation={2}>
         <Typography variant="h6" gutterBottom>
           Configuration
         </Typography>
         <Divider sx={{ marginBottom: '20px' }} />
-        <Grid container spacing={3}>
+        <Grid container spacing={3} alignItems="center">
           <Grid item xs={12} sm={6} md={4}>
             <FormControl fullWidth>
               <InputLabel id="patient-id-select-label">Select Patient</InputLabel>
@@ -562,28 +662,45 @@ function SEEG({ directoryPath }) {
             </FormControl>
           </Grid>
           <Grid item xs={12} sm={6} md={4}>
-            <FormControl fullWidth>
-              <InputLabel id="electrode-select-label">Choose an Electrode</InputLabel>
-              <Select
-                labelId="electrode-select-label"
-                id="electrode-select"
-                value={selectedElectrode}
-                label="Choose an Electrode"
-                onChange={handleElectrodeChange}
-              >
-                {electrodeNames.map((electrode, index) => (
-                  <MenuItem key={electrode} value={electrode}>
-                    {electrode} - {electrodeModels[index]}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+              Entry view
+            </Typography>
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={entryMode}
+              onChange={(_, mode) => { if (mode) setEntryMode(mode); }}
+              aria-label="Stimulation entry mode"
+            >
+              <ToggleButton value="cards" aria-label="Card entry">Cards</ToggleButton>
+              <ToggleButton value="grid" aria-label="Grid entry">Grid workbook</ToggleButton>
+            </ToggleButtonGroup>
           </Grid>
+          {entryMode === 'cards' && (
+            <Grid item xs={12} sm={6} md={4}>
+              <FormControl fullWidth>
+                <InputLabel id="electrode-select-label">Choose an Electrode</InputLabel>
+                <Select
+                  labelId="electrode-select-label"
+                  id="electrode-select"
+                  value={selectedElectrode}
+                  label="Choose an Electrode"
+                  onChange={handleElectrodeChange}
+                >
+                  {electrodeNames.map((electrode, index) => (
+                    <MenuItem key={electrode} value={electrode}>
+                      {electrode} - {electrodeModels[index]}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+          )}
         </Grid>
       </Paper>
 
       {/* Variables Section */}
-      <Paper className={classes.sectionPaper} elevation={2}>
+      {entryMode === 'cards' && <Paper className={classes.sectionPaper} elevation={2}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
           <Typography variant="h6">Custom Variables</Typography>
           <Button onClick={addVariableName} variant="contained" color="primary" size="small">
@@ -598,32 +715,101 @@ function SEEG({ directoryPath }) {
                 fullWidth
                 label={`Variable Name ${varIndex + 1}`}
                 value={varName}
-                onChange={(event) => {
-                  const newName = event.target.value;
-                  setVariableNames((prevNames) => {
-                    const updatedNames = [...prevNames];
-                    updatedNames[varIndex] = newName;
-                    return updatedNames;
-                  });
-                }}
+                onChange={(event) => renameVariable(varIndex, event.target.value)}
                 margin="normal"
               />
             </Grid>
           ))}
         </Grid>
-      </Paper>
+      </Paper>}
 
       {/* Stimulation Sets Section */}
       <Paper className={classes.sectionPaper} elevation={2}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <Typography variant="h6">Stimulation Sets</Typography>
-          <Button onClick={addSet} variant="contained" color="primary" size="small">
-            Add Set
-          </Button>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2, flexWrap: 'wrap', marginBottom: '16px' }}>
+          <Typography variant="h6">
+            {entryMode === 'grid' ? 'Stimulation workbook' : `Stimulation Sets (${electrodeSets[selectedElectrode]?.length || 0})`}
+          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+            {entryMode === 'cards' && (
+              <Button onClick={addSet} variant="contained" color="primary" size="small">
+                Add Set
+              </Button>
+            )}
+          </Box>
         </Box>
         <Divider sx={{ marginBottom: '20px' }} />
 
-        {electrodeSets[selectedElectrode]?.map((set, index) => (
+        {entryMode === 'grid' ? (
+          <Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1.5, mb: 2 }}>
+              <Typography variant="subtitle2" sx={{ mr: 0.5 }}>Variable columns</Typography>
+              {variableNames.map((varName, index) => (
+                <TextField
+                  key={index}
+                  size="small"
+                  label={`Variable ${index + 1}`}
+                  value={varName}
+                  onChange={(event) => renameVariable(index, event.target.value)}
+                  sx={{ width: 160 }}
+                />
+              ))}
+              <Button size="small" variant="outlined" onClick={addVariableName}>
+                Add Variable
+              </Button>
+            </Box>
+            <Tabs
+              value={electrodeNames.includes(selectedElectrode) ? selectedElectrode : false}
+              onChange={(_, electrode) => setSelectedElectrode(electrode)}
+              variant="scrollable"
+              scrollButtons="auto"
+              allowScrollButtonsMobile
+              aria-label="Electrode sheets"
+              sx={{
+                mb: 1.5,
+                minHeight: 42,
+                borderBottom: '1px solid',
+                borderColor: 'divider',
+                '& .MuiTab-root': {
+                  minHeight: 42,
+                  textTransform: 'none',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  borderBottom: 0,
+                  borderRadius: '6px 6px 0 0',
+                  mr: 0.5,
+                  px: 1.5,
+                },
+                '& .Mui-selected': { bgcolor: 'action.selected', fontWeight: 700 },
+              }}
+            >
+              {electrodeNames.map((electrode, index) => (
+                <Tab
+                  key={electrode}
+                  value={electrode}
+                  label={`${electrode} · ${electrodeSets[electrode]?.length || 0}`}
+                  title={electrodeModels[index] || electrode}
+                  aria-label={`${electrode}, ${electrodeSets[electrode]?.length || 0} stimulation sets`}
+                />
+              ))}
+            </Tabs>
+            <SEEGGrid
+              sets={electrodeSets[selectedElectrode] || []}
+              variableNames={variableNames}
+              contactNames={contactNames}
+              onCellChange={handleGridCellChange}
+              onPasteCells={handleGridPaste}
+              onRemoveSet={removeSet}
+            />
+            <Box sx={{ display: 'flex', gap: 1, mt: 1.5 }}>
+              <Button size="small" variant="outlined" onClick={() => addSets(1)}>
+                Add Set
+              </Button>
+              <Button size="small" variant="outlined" onClick={() => addSets(10)}>
+                Add 10 Sets
+              </Button>
+            </Box>
+          </Box>
+        ) : electrodeSets[selectedElectrode]?.map((set, index) => (
           <Box key={index} sx={{ marginBottom: '32px', padding: '20px', border: '1px solid #e0e0e0', borderRadius: '8px', backgroundColor: '#fafafa' }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
               <Typography variant="subtitle1" fontWeight="bold">

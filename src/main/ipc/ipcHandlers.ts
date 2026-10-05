@@ -1261,10 +1261,29 @@ export default function registerFileHandlers() {
         .sort((first: DirectoryEntry, second: DirectoryEntry) =>
           first.name.localeCompare(second.name),
         )
-        .map((entry: DirectoryEntry) => ({
-          electrodeName: entry.name.slice(prefix.length, -suffix.length),
-          CSV: fs.readFileSync(path.join(stimDir, entry.name), 'utf8'),
-        }));
+        .map((entry: DirectoryEntry) => {
+          const stem = entry.name.slice(0, -suffix.length);
+          const metadataPath = path.join(stimDir, `${stem}.json`);
+          let metadata;
+          let variableNames;
+          if (fs.existsSync(metadataPath)) {
+            try {
+              const parsed = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+              if (Array.isArray(parsed?.sets)) metadata = parsed.sets;
+              if (Array.isArray(parsed?.variableNames)) {
+                variableNames = parsed.variableNames;
+              }
+            } catch (error) {
+              console.warn(`Ignoring invalid sEEG metadata: ${metadataPath}`, error);
+            }
+          }
+          return {
+            electrodeName: entry.name.slice(prefix.length, -suffix.length),
+            CSV: fs.readFileSync(path.join(stimDir, entry.name), 'utf8'),
+            metadata,
+            variableNames,
+          };
+        });
     },
   );
 
@@ -1288,8 +1307,13 @@ export default function registerFileHandlers() {
     fs.writeFileSync(filePath, data.TSV);
 
     data.electrodeCSVs.forEach(
-      (electrodeCSV: { electrodeName: string; CSV: string }) => {
-        const { electrodeName, CSV } = electrodeCSV;
+      (electrodeCSV: {
+        electrodeName: string;
+        CSV: string;
+        metadata?: unknown[];
+        variableNames?: string[];
+      }) => {
+        const { electrodeName, CSV, metadata, variableNames } = electrodeCSV;
         // Keep the electrode name in the filename while preventing path traversal
         // or characters that are invalid on supported operating systems.
         const safeElectrodeName = electrodeName
@@ -1307,6 +1331,16 @@ export default function registerFileHandlers() {
           `${data.selectedPatientId}_stimparameters_${safeElectrodeName}.csv`,
         );
         fs.writeFileSync(csvFilePath, CSV);
+        if (Array.isArray(metadata)) {
+          const metadataPath = path.join(
+            stimDir,
+            `${data.selectedPatientId}_stimparameters_${safeElectrodeName}.json`,
+          );
+          fs.writeFileSync(
+            metadataPath,
+            JSON.stringify({ version: 1, variableNames, sets: metadata }, null, 2),
+          );
+        }
       },
     );
   });
