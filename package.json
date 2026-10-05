@@ -247,6 +247,7 @@
       ]
     },
     "linux": {
+      "executableName": "LeadDBSProgrammer",
       "target": [
         {
           "target": "zip",
