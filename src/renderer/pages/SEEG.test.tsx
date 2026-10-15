@@ -31,6 +31,8 @@ describe('sEEG workbook sheets', () => {
     });
   });
 
+  afterEach(() => jest.restoreAllMocks());
+
   it('uses electrode tabs in grid mode and keeps each sheet separate', async () => {
     render(<MemoryRouter><SEEG directoryPath="/dataset" /></MemoryRouter>);
 
@@ -64,5 +66,24 @@ describe('sEEG workbook sheets', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Card entry' }));
     expect(screen.getByLabelText('Choose an Electrode')).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: /Electrode B/i })).not.toBeInTheDocument();
+  });
+
+  it('sends the current configurations to the modeling handler after confirmation', async () => {
+    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<MemoryRouter><SEEG directoryPath="/dataset" /></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Model stimulation' }));
+    const invoke = (window as any).electron.ipcRenderer.invoke as jest.Mock;
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+      'model-seeg-stimulation',
+      expect.objectContaining({
+        directoryPath: '/dataset',
+        selectedPatientId: 'sub-01',
+        electrodeCSVs: expect.arrayContaining([
+          expect.objectContaining({ electrodeName: 'Electrode A' }),
+          expect.objectContaining({ electrodeName: 'Electrode B' }),
+        ]),
+      }),
+    ));
   });
 });

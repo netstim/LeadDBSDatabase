@@ -18,6 +18,7 @@ import {
   Tab,
   Tabs,
   SelectChangeEvent,
+  Alert,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import RemoveIcon from '@mui/icons-material/Remove';
@@ -291,6 +292,8 @@ function SEEG({ directoryPath }: SEEGProps) {
     Record<string, ElectrodeSet[]>
   >({});
   const [entryMode, setEntryMode] = useState<'cards' | 'grid'>('cards');
+  const [modeling, setModeling] = useState(false);
+  const [modelError, setModelError] = useState('');
 
   // Initialize each electrode from its saved CSV, or use a blank set if no
   // saved stimulation file exists.
@@ -584,8 +587,8 @@ function SEEG({ directoryPath }: SEEGProps) {
     return tsvString;
   };
 
-  const saveElectrodeConfigToCSV = () => {
-    if (!data?.props) return;
+  const buildSeegSavePayload = () => {
+    if (!data?.props) return null;
 
     const electrodeCSVs = data.props.map((electrode) => {
       const labels = electrode.labels?.[0] || [];
@@ -618,12 +621,33 @@ function SEEG({ directoryPath }: SEEGProps) {
     });
 
     const tsvString = saveTSV();
-    window.electron.ipcRenderer.sendMessage('save-file-seeg', {
+    return {
       TSV: tsvString,
       electrodeCSVs,
       directoryPath: directoryPath,
       selectedPatientId: selectedPatientId,
-    });
+    };
+  };
+
+  const saveElectrodeConfigToCSV = () => {
+    const payload = buildSeegSavePayload();
+    if (payload) window.electron.ipcRenderer.sendMessage('save-file-seeg', payload);
+  };
+
+  const modelStimulation = async () => {
+    const payload = buildSeegSavePayload();
+    if (!payload) return;
+    if (!window.confirm('Save the sEEG stimulations, close this app, and start OSS-DBS modeling in MATLAB?')) {
+      return;
+    }
+    setModelError('');
+    setModeling(true);
+    try {
+      await window.electron.ipcRenderer.invoke('model-seeg-stimulation', payload);
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : String(error));
+      setModeling(false);
+    }
   };
 
   // Show loading state while data is being fetched
@@ -937,6 +961,7 @@ function SEEG({ directoryPath }: SEEGProps) {
       </Paper>
 
       {/* Action Buttons */}
+      {modelError && <Alert severity="error" sx={{ mt: 2 }}>{modelError}</Alert>}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', marginTop: '24px', marginBottom: '80px' }}>
         <Button
           variant="outlined"
@@ -944,14 +969,25 @@ function SEEG({ directoryPath }: SEEGProps) {
         >
           ← Back
         </Button>
-        <Button
-          variant="contained"
-          color="primary"
-          size="large"
-          onClick={saveElectrodeConfigToCSV}
-        >
-          Save All Electrode Configurations
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+          <Button
+            variant="outlined"
+            size="large"
+            onClick={saveElectrodeConfigToCSV}
+            disabled={modeling}
+          >
+            Save All Electrode Configurations
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            size="large"
+            onClick={modelStimulation}
+            disabled={modeling}
+          >
+            {modeling ? 'Starting MATLAB…' : 'Model stimulation'}
+          </Button>
+        </Box>
       </Box>
     </Box>
   );

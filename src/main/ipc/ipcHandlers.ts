@@ -11,10 +11,23 @@ import {
   writeNewLeadGroupAnalysis,
 } from '../utils/leadGroupExport';
 import { buildLeadGroupMatFile } from '../utils/leadGroupMat';
+import { launchSeegModeling, prepareSeegModeling } from '../utils/seegModeling';
 
 const { execSync } = require('child_process');
 
 const fs = require('fs');
+
+interface SeegSavePayload {
+  directoryPath: string;
+  selectedPatientId: string;
+  TSV: string;
+  electrodeCSVs: {
+    electrodeName: string;
+    CSV: string;
+    metadata?: unknown[];
+    variableNames?: string[];
+  }[];
+}
 
 let fileHandlersRegistered = false;
 
@@ -35,6 +48,46 @@ const assertSafePathSegment = (value: unknown, label: string): string => {
   }
 
   return value;
+};
+
+const saveSeegFiles = (data: SeegSavePayload): string => {
+  const patientId = assertSafePathSegment(data.selectedPatientId, 'sEEG patient ID');
+  if (typeof data.directoryPath !== 'string' || !path.isAbsolute(data.directoryPath)) {
+    throw new Error('Invalid sEEG dataset directory.');
+  }
+  if (typeof data.TSV !== 'string' || !Array.isArray(data.electrodeCSVs)) {
+    throw new Error('Invalid sEEG stimulation data.');
+  }
+  const stimDir = path.join(
+    data.directoryPath,
+    'derivatives',
+    'leaddbs',
+    patientId,
+    'stimulations',
+  );
+  fs.mkdirSync(stimDir, { recursive: true });
+  fs.writeFileSync(path.join(stimDir, `${patientId}_stimparameters.tsv`), data.TSV);
+
+  data.electrodeCSVs.forEach(({ electrodeName, CSV, metadata, variableNames }) => {
+    if (typeof electrodeName !== 'string' || typeof CSV !== 'string') {
+      throw new Error('Invalid sEEG electrode data.');
+    }
+    const safeElectrodeName = electrodeName
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+      .trim();
+    if (!safeElectrodeName) {
+      throw new Error('Cannot save an sEEG configuration without an electrode name');
+    }
+    const stem = `${patientId}_stimparameters_${safeElectrodeName}`;
+    fs.writeFileSync(path.join(stimDir, `${stem}.csv`), CSV);
+    if (Array.isArray(metadata)) {
+      fs.writeFileSync(
+        path.join(stimDir, `${stem}.json`),
+        JSON.stringify({ version: 1, variableNames, sets: metadata }, null, 2),
+      );
+    }
+  });
+  return stimDir;
 };
 
 const exactArrayBuffer = (value: Buffer): ArrayBuffer =>
@@ -1287,62 +1340,27 @@ export default function registerFileHandlers() {
     },
   );
 
-  ipcMain.on('save-file-seeg', async (event, data) => {
-    console.log('data: ', data);
-    const stimDir = path.join(
-      data.directoryPath,
-      'derivatives',
-      'leaddbs',
-      data.selectedPatientId,
-      'stimulations',
-    );
-    // Make directory if needed
-    if (!fs.existsSync(stimDir)) {
-      fs.mkdirSync(stimDir, { recursive: true });
+  ipcMain.on('save-file-seeg', (_event, data: SeegSavePayload) => {
+    try {
+      saveSeegFiles(data);
+    } catch (error) {
+      dialog.showErrorBox('Unable to save sEEG stimulations', errorMessage(error));
     }
-    const filePath = path.join(
-      stimDir,
-      `${data.selectedPatientId}_stimparameters.tsv`,
+  });
+
+  ipcMain.handle('model-seeg-stimulation', async (_event, data: SeegSavePayload) => {
+    saveSeegFiles(data);
+    const launchLeadPath = getData('stimulationData')?.leadpath;
+    const prepared = prepareSeegModeling(
+      data.directoryPath,
+      data.selectedPatientId,
+      typeof launchLeadPath === 'string' ? launchLeadPath : undefined,
     );
-    fs.writeFileSync(filePath, data.TSV);
-
-    data.electrodeCSVs.forEach(
-      (electrodeCSV: {
-        electrodeName: string;
-        CSV: string;
-        metadata?: unknown[];
-        variableNames?: string[];
-      }) => {
-        const { electrodeName, CSV, metadata, variableNames } = electrodeCSV;
-        // Keep the electrode name in the filename while preventing path traversal
-        // or characters that are invalid on supported operating systems.
-        const safeElectrodeName = electrodeName
-          .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
-          .trim();
-
-        if (!safeElectrodeName) {
-          throw new Error(
-            'Cannot save an sEEG configuration without an electrode name',
-          );
-        }
-
-        const csvFilePath = path.join(
-          stimDir,
-          `${data.selectedPatientId}_stimparameters_${safeElectrodeName}.csv`,
-        );
-        fs.writeFileSync(csvFilePath, CSV);
-        if (Array.isArray(metadata)) {
-          const metadataPath = path.join(
-            stimDir,
-            `${data.selectedPatientId}_stimparameters_${safeElectrodeName}.json`,
-          );
-          fs.writeFileSync(
-            metadataPath,
-            JSON.stringify({ version: 1, variableNames, sets: metadata }, null, 2),
-          );
-        }
-      },
-    );
+    await launchSeegModeling(prepared);
+    // Let the IPC response reach the renderer before closing Electron. MATLAB
+    // is detached and continues to write its progress to the stimulation log.
+    setTimeout(() => app.quit(), 500);
+    return { logPath: prepared.logPath };
   });
 
   // Template download handlers
